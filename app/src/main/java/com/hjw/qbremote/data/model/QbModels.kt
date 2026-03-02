@@ -34,3 +34,11 @@ data class DashboardData(
     val transferInfo: TransferInfo,
     val torrents: List<TorrentInfo>,
 )
+
+data class SyncMainDataResponse(
+    @SerializedName("rid") val rid: Long = 0,
+    @SerializedName("full_update") val fullUpdate: Boolean = false,
+    @SerializedName("server_state") val serverState: TransferInfo = TransferInfo(),
+    @SerializedName("torrents") val torrents: Map<String, TorrentInfo> = emptyMap(),
+    @SerializedName("torrents_removed") val torrentsRemoved: List<String> = emptyList(),
+)

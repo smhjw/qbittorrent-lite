@@ -1,50 +1,60 @@
 # QB Remote (Android MVP)
 
-一个类似你截图风格的 qBittorrent 安卓远程管理端 MVP：
+Android remote control app for qBittorrent WebUI.
 
-- 连接 qBittorrent Web API
-- 登录鉴权（`/api/v2/auth/login`）
-- 拉取全局传输信息（`/api/v2/transfer/info`）
-- 拉取种子列表（`/api/v2/torrents/info`）
-- 暗色任务卡片列表（进度、速率、做种/下载状态）
-- 自动轮询刷新
-- 任务操作：暂停 / 继续 / 删除（可选删除文件）
-- 状态筛选：All / Downloading / Seeding / Paused / Completed / Error
+## Features
 
-## 1. qBittorrent 端准备
+- Connect and login via qBittorrent Web API
+- Global transfer panel (download/upload speed and totals)
+- Torrent list with progress, rates, and status labels
+- Torrent actions: `Pause`, `Resume`, `Delete` (with or without files)
+- Status filters: `All`, `Downloading`, `Seeding`, `Paused`, `Completed`, `Error`
+- Auto refresh with configurable interval
 
-在 qBittorrent（桌面端）里开启 WebUI：
+## Reliability and Security Improvements
 
-1. `工具 -> 选项 -> Web UI`
-2. 勾选 `Web 用户界面（远程控制）`
-3. 设置端口（默认 `8080`）
-4. 设置用户名/密码
-5. 如果你要手机跨网段访问，确认防火墙和路由放行端口
+- Incremental sync via `GET /api/v2/sync/maindata?rid=...`
+  - Keeps a local torrent cache and applies deltas from qB
+  - Falls back to full endpoints for older servers that do not support sync API
+- Session recovery
+  - Auto re-login on `401/403` and retry request
+  - Exponential backoff retry for network failures and `5xx`
+- Credential storage hardening
+  - Password moved from plain DataStore to `EncryptedSharedPreferences`
+  - Automatic one-time migration from legacy DataStore password key
 
-## 2. 安卓端运行
+## qBittorrent Setup
 
-1. 用 Android Studio 打开 `qb-remote-android`
-2. 首次打开执行 Gradle Sync
-3. 运行到真机或模拟器
-4. 在 App 中输入：
-   - Host：qB 主机 IP（例如 `192.168.1.12`）
-   - 端口：qB WebUI 端口（例如 `8080`）
-   - 用户名/密码：qB WebUI 账户
-   - 是否 HTTPS：按你的 qB 配置选择
-5. 点击“连接”
+In desktop qBittorrent:
 
-## 3. 当前限制（MVP）
+1. Open `Tools -> Options -> Web UI`
+2. Enable `Web User Interface (Remote control)`
+3. Set WebUI port (default `8080`)
+4. Set username and password
+5. Ensure firewall/router allow access from your phone if needed
 
-- 密码当前存储在 DataStore（未做系统级加密）
-- HTTPS 自签证书未做信任适配
-- 尚未实现加标签、改分类、批量操作
+## Run
 
-## 4. 下一步建议
+1. Open `qb-remote-android` in Android Studio
+2. Run Gradle Sync
+3. Start on device/emulator
+4. Fill in app connection form:
+   - Host/IP (for example `192.168.1.12`)
+   - Port (for example `8080`)
+   - Username/password
+   - HTTPS toggle
+5. Click `Connect`
 
-- 接入 `EncryptedSharedPreferences` 或 Android Keystore 存储凭据
-- 增加任务控制接口：
-  - `/api/v2/torrents/pause`
-  - `/api/v2/torrents/resume`
-  - `/api/v2/torrents/delete`
-- 加入搜索、筛选、分组、状态统计面板
-- 增加“多服务器配置”
+## Current MVP Gaps
+
+- No certificate pinning or self-signed cert trust flow yet
+- No batch actions yet
+- No multi-server profile management yet
+- No CI/test pipeline yet
+
+## Suggested Next Steps
+
+1. Batch actions (multi-select pause/resume/delete)
+2. Multi-server profiles (save/switch quickly)
+3. Search + sort + grouping stats
+4. Unit tests with `MockWebServer` + ViewModel tests

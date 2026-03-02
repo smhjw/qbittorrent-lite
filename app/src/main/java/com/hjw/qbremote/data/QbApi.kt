@@ -2,6 +2,7 @@ package com.hjw.qbremote.data
 
 import com.hjw.qbremote.data.model.TorrentInfo
 import com.hjw.qbremote.data.model.TransferInfo
+import com.hjw.qbremote.data.model.SyncMainDataResponse
 import retrofit2.Response
 import retrofit2.http.Field
 import retrofit2.http.FormUrlEncoded
@@ -25,6 +26,11 @@ interface QbApi {
         @Query("sort") sort: String = "added_on",
         @Query("reverse") reverse: Boolean = true,
     ): List<TorrentInfo>
+
+    @GET("api/v2/sync/maindata")
+    suspend fun syncMainData(
+        @Query("rid") rid: Long = 0,
+    ): SyncMainDataResponse
 
     @FormUrlEncoded
     @POST("api/v2/torrents/pause")

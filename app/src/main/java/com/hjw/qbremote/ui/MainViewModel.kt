@@ -62,6 +62,7 @@ class MainViewModel(
 
     init {
         viewModelScope.launch {
+            connectionStore.migrateLegacyPasswordIfNeeded()
             connectionStore.settingsFlow.collect { settings ->
                 _uiState.update { current -> current.copy(settings = settings) }
             }
