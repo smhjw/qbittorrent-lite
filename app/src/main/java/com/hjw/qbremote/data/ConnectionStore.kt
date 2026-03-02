@@ -20,6 +20,13 @@ data class ConnectionSettings(
     val username: String = "admin",
     val password: String = "",
     val refreshSeconds: Int = 3,
+    val showSpeedTotals: Boolean = true,
+    val enableServerGrouping: Boolean = true,
+    val showChartPanel: Boolean = true,
+    val chartShowSiteName: Boolean = true,
+    val chartSortMode: ChartSortMode = ChartSortMode.TOTAL_SPEED,
+    val deleteFilesDefault: Boolean = true,
+    val deleteFilesWhenNoSeeders: Boolean = false,
 ) {
     fun baseUrl(): String {
         val cleanHost = host.trim()
@@ -29,6 +36,13 @@ data class ConnectionSettings(
         val scheme = if (useHttps) "https" else "http"
         return "$scheme://$cleanHost:$port/"
     }
+}
+
+enum class ChartSortMode {
+    TOTAL_SPEED,
+    DOWNLOAD_SPEED,
+    UPLOAD_SPEED,
+    TORRENT_COUNT,
 }
 
 class ConnectionStore(private val context: Context) {
@@ -41,6 +55,13 @@ class ConnectionStore(private val context: Context) {
         val Username = stringPreferencesKey("username")
         val PasswordLegacy = stringPreferencesKey("password")
         val RefreshSeconds = intPreferencesKey("refresh_seconds")
+        val ShowSpeedTotals = booleanPreferencesKey("show_speed_totals")
+        val EnableServerGrouping = booleanPreferencesKey("enable_server_grouping")
+        val ShowChartPanel = booleanPreferencesKey("show_chart_panel")
+        val ChartShowSiteName = booleanPreferencesKey("chart_show_site_name")
+        val ChartSortMode = stringPreferencesKey("chart_sort_mode")
+        val DeleteFilesDefault = booleanPreferencesKey("delete_files_default")
+        val DeleteFilesWhenNoSeeders = booleanPreferencesKey("delete_files_when_no_seeders")
     }
 
     val settingsFlow: Flow<ConnectionSettings> = context.dataStore.data.map { pref ->
@@ -55,6 +76,13 @@ class ConnectionStore(private val context: Context) {
             pref[Keys.UseHttps] = settings.useHttps
             pref[Keys.Username] = settings.username
             pref[Keys.RefreshSeconds] = settings.refreshSeconds
+            pref[Keys.ShowSpeedTotals] = settings.showSpeedTotals
+            pref[Keys.EnableServerGrouping] = settings.enableServerGrouping
+            pref[Keys.ShowChartPanel] = settings.showChartPanel
+            pref[Keys.ChartShowSiteName] = settings.chartShowSiteName
+            pref[Keys.ChartSortMode] = settings.chartSortMode.name
+            pref[Keys.DeleteFilesDefault] = settings.deleteFilesDefault
+            pref[Keys.DeleteFilesWhenNoSeeders] = settings.deleteFilesWhenNoSeeders
             pref.remove(Keys.PasswordLegacy)
         }
     }
@@ -76,6 +104,15 @@ class ConnectionStore(private val context: Context) {
             username = this[Keys.Username] ?: "admin",
             password = securePassword,
             refreshSeconds = this[Keys.RefreshSeconds] ?: 3,
+            showSpeedTotals = this[Keys.ShowSpeedTotals] ?: true,
+            enableServerGrouping = this[Keys.EnableServerGrouping] ?: true,
+            showChartPanel = this[Keys.ShowChartPanel] ?: true,
+            chartShowSiteName = this[Keys.ChartShowSiteName] ?: true,
+            chartSortMode = runCatching {
+                enumValueOf<ChartSortMode>(this[Keys.ChartSortMode].orEmpty())
+            }.getOrDefault(ChartSortMode.TOTAL_SPEED),
+            deleteFilesDefault = this[Keys.DeleteFilesDefault] ?: true,
+            deleteFilesWhenNoSeeders = this[Keys.DeleteFilesWhenNoSeeders] ?: false,
         )
     }
 }

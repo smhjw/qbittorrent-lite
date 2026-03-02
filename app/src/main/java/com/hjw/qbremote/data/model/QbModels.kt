@@ -27,6 +27,7 @@ data class TorrentInfo(
     @SerializedName("num_leechs") val leechers: Int = 0,
     @SerializedName("num_complete") val numComplete: Int = 0,
     @SerializedName("num_incomplete") val numIncomplete: Int = 0,
+    @SerializedName("tracker") val tracker: String = "",
     @SerializedName("save_path") val savePath: String = "",
     @SerializedName("tags") val tags: String = "",
 )

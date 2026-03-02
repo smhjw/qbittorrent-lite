@@ -3,6 +3,7 @@ package com.hjw.qbremote.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.hjw.qbremote.data.ChartSortMode
 import com.hjw.qbremote.data.ConnectionSettings
 import com.hjw.qbremote.data.ConnectionStore
 import com.hjw.qbremote.data.QbRepository
@@ -86,6 +87,34 @@ class MainViewModel(
     fun updateRefreshSeconds(value: String) {
         val sec = value.toIntOrNull()?.coerceIn(2, 60) ?: 3
         updateSettings { it.copy(refreshSeconds = sec) }
+    }
+
+    fun updateShowSpeedTotals(value: Boolean) = updateAndPersistSettings {
+        it.copy(showSpeedTotals = value)
+    }
+
+    fun updateEnableServerGrouping(value: Boolean) = updateAndPersistSettings {
+        it.copy(enableServerGrouping = value)
+    }
+
+    fun updateShowChartPanel(value: Boolean) = updateAndPersistSettings {
+        it.copy(showChartPanel = value)
+    }
+
+    fun updateChartShowSiteName(value: Boolean) = updateAndPersistSettings {
+        it.copy(chartShowSiteName = value)
+    }
+
+    fun updateChartSortMode(value: ChartSortMode) = updateAndPersistSettings {
+        it.copy(chartSortMode = value)
+    }
+
+    fun updateDeleteFilesDefault(value: Boolean) = updateAndPersistSettings {
+        it.copy(deleteFilesDefault = value)
+    }
+
+    fun updateDeleteFilesWhenNoSeeders(value: Boolean) = updateAndPersistSettings {
+        it.copy(deleteFilesWhenNoSeeders = value)
     }
 
     fun setFilter(filter: TorrentFilter) {
@@ -186,6 +215,13 @@ class MainViewModel(
 
     private fun updateSettings(update: (ConnectionSettings) -> ConnectionSettings) {
         _uiState.update { current -> current.copy(settings = update(current.settings)) }
+    }
+
+    private fun updateAndPersistSettings(update: (ConnectionSettings) -> ConnectionSettings) {
+        updateSettings(update)
+        viewModelScope.launch {
+            connectionStore.save(_uiState.value.settings)
+        }
     }
 
     private fun startAutoRefresh() {
