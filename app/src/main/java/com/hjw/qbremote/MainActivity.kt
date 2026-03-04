@@ -1,13 +1,25 @@
 package com.hjw.qbremote
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import androidx.core.os.LocaleListCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hjw.qbremote.data.AppLanguage
+import com.hjw.qbremote.data.AppTheme
 import com.hjw.qbremote.data.ConnectionStore
 import com.hjw.qbremote.data.QbRepository
 import com.hjw.qbremote.ui.MainScreen
@@ -32,10 +44,15 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            QBRemoteTheme {
-                val vm: MainViewModel = viewModel(
-                    factory = MainViewModel.factory(connectionStore, repository)
-                )
+            val vm: MainViewModel = viewModel(
+                factory = MainViewModel.factory(connectionStore, repository)
+            )
+            val uiState by vm.uiState.collectAsState()
+            val darkTheme = uiState.settings.appTheme == AppTheme.DARK
+            QBRemoteTheme(
+                darkTheme = darkTheme,
+            ) {
+                ConfigureSystemBars(darkTheme = darkTheme)
                 MainScreen(viewModel = vm)
             }
         }
@@ -48,5 +65,33 @@ class MainActivity : ComponentActivity() {
             AppLanguage.EN -> LocaleListCompat.forLanguageTags("en")
         }
         AppCompatDelegate.setApplicationLocales(locales)
+    }
+}
+
+@Composable
+private fun ConfigureSystemBars(darkTheme: Boolean) {
+    val view = LocalView.current
+    if (view.isInEditMode) return
+
+    val statusBarColor = MaterialTheme.colorScheme.background.toArgb()
+    val navigationBarColor = MaterialTheme.colorScheme.surface.toArgb()
+
+    SideEffect {
+        val activity = view.context.findActivity() ?: return@SideEffect
+        val window = activity.window
+        window.statusBarColor = statusBarColor
+        window.navigationBarColor = navigationBarColor
+        WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = !darkTheme
+            isAppearanceLightNavigationBars = !darkTheme
+        }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? {
+    return when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
     }
 }
