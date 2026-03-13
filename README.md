@@ -2,6 +2,7 @@
 
 Android app for remotely managing qBittorrent through the WebUI API.
 
+
 `qbitremote` is an Android app for remotely managing qBittorrent through the WebUI API.
 
 - Connect to qBittorrent with host/IP or full `http(s)://` URL
@@ -23,7 +24,7 @@ Android app for remotely managing qBittorrent through the WebUI API.
 - Target / Compile SDK: `35`
 - Version: `0.1.7` (`versionCode = 8`)
 
-- Latest APK: `release/qbitremote-v0.1.5.apk`
+- Latest APK: `release/qbitremote-v0.1.7.apk`
 
 ## License
 
