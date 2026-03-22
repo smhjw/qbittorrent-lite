@@ -17,7 +17,6 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.logging.HttpLoggingInterceptor
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import kotlinx.coroutines.delay
 import retrofit2.HttpException
@@ -29,14 +28,17 @@ import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
-class QbRepository {
+class QbRepository : TorrentBackend {
+    override val backendType: ServerBackendType = ServerBackendType.QBITTORRENT
+    override val capabilities: ServerCapabilities = defaultCapabilitiesFor(backendType)
+
     private var api: QbApi? = null
     private var activeSettings: ConnectionSettings? = null
 
     private val torrentCache = linkedMapOf<String, TorrentInfo>()
     private val credentialTrimChars = charArrayOf(' ', '\t', '\r', '\n', '\u0000', '\uFEFF')
 
-    suspend fun connect(settings: ConnectionSettings): Result<Unit> = runCatching {
+    override suspend fun connect(settings: ConnectionSettings): Result<Unit> = runCatching {
         require(settings.host.isNotBlank()) { "Host cannot be empty." }
 
         var lastError: Throwable? = null
@@ -67,6 +69,9 @@ class QbRepository {
                     if (error is AuthLockedException) {
                         throw error
                     }
+                    if (error is BackendConnectionError.WrongBackend) {
+                        throw error
+                    }
                 }
             }
         }
@@ -83,50 +88,128 @@ class QbRepository {
         )
     }
 
-    suspend fun fetchDashboard(): Result<DashboardData> = runCatching {
+    override fun clearSession() {
+        api = null
+        activeSettings = null
+        torrentCache.clear()
+    }
+
+    override suspend fun fetchDashboard(): Result<DashboardData> = runCatching {
         // Always use full refresh to avoid incremental-field overwrite issues.
         fallbackFullRefresh()
     }
 
-    suspend fun pauseTorrent(hash: String): Result<Unit> = runCatching {
+    override suspend fun fetchDashboardSnapshot(settings: ConnectionSettings): Result<DashboardSnapshotFetchResult> =
+        runCatching {
+            val oneShot = QbRepository()
+            oneShot.connect(settings).getOrThrow()
+            DashboardSnapshotFetchResult(
+                serverVersion = oneShot.fetchServerVersion().getOrThrow(),
+                dashboardData = oneShot.fetchDashboard().getOrThrow(),
+            )
+        }
+
+    override suspend fun pauseTorrent(hash: String): Result<Unit> = runCatching {
         require(hash.isNotBlank()) { "Invalid torrent hash." }
         executeWithRetry { liveApi ->
             liveApi.pauseTorrents(hash).ensureSuccess("Pause failed.")
         }
     }
 
-    suspend fun resumeTorrent(hash: String): Result<Unit> = runCatching {
+    override suspend fun resumeTorrent(hash: String): Result<Unit> = runCatching {
         require(hash.isNotBlank()) { "Invalid torrent hash." }
         executeWithRetry { liveApi ->
             liveApi.resumeTorrents(hash).ensureSuccess("Resume failed.")
         }
     }
 
-    suspend fun deleteTorrent(hash: String, deleteFiles: Boolean): Result<Unit> = runCatching {
+    override suspend fun deleteTorrent(hash: String, deleteFiles: Boolean): Result<Unit> = runCatching {
         require(hash.isNotBlank()) { "Invalid torrent hash." }
         executeWithRetry { liveApi ->
             liveApi.deleteTorrents(hash, deleteFiles).ensureSuccess("Delete failed.")
         }
     }
 
-    suspend fun fetchServerVersion(): Result<String> = runCatching {
+    override suspend fun reannounceTorrent(hash: String): Result<Unit> = runCatching {
+        require(hash.isNotBlank()) { "Invalid torrent hash." }
+        executeWithRetry { liveApi ->
+            liveApi.reannounceTorrents(hash).ensureSuccess("Reannounce failed.")
+        }
+    }
+
+    override suspend fun recheckTorrent(hash: String): Result<Unit> = runCatching {
+        require(hash.isNotBlank()) { "Invalid torrent hash." }
+        executeWithRetry { liveApi ->
+            liveApi.recheckTorrents(hash).ensureSuccess("Recheck failed.")
+        }
+    }
+
+    override suspend fun fetchServerVersion(): Result<String> = runCatching {
         executeWithRetry { liveApi -> liveApi.appVersion().trim() }.ifBlank { "-" }
     }
 
-    suspend fun fetchTorrentDetail(hash: String): Result<TorrentDetailData> = runCatching {
+    override suspend fun fetchTorrentDetail(hash: String): Result<TorrentDetailData> = runCatching {
         require(hash.isNotBlank()) { "Invalid torrent hash." }
         val properties = executeWithRetry { liveApi -> liveApi.torrentProperties(hash) }
         val files = executeWithRetry { liveApi -> liveApi.torrentFiles(hash) }
         TorrentDetailData(properties = properties, files = files)
     }
 
-    suspend fun fetchTorrentTrackers(hash: String): Result<List<com.hjw.qbremote.data.model.TorrentTracker>> =
+    override suspend fun fetchTorrentTrackers(hash: String): Result<List<com.hjw.qbremote.data.model.TorrentTracker>> =
         runCatching {
             require(hash.isNotBlank()) { "Invalid torrent hash." }
             executeWithRetry { liveApi -> liveApi.torrentTrackers(hash) }
         }
 
-    suspend fun fetchCategoryOptions(): Result<List<String>> = runCatching {
+    override suspend fun addTracker(hash: String, trackerUrl: String): Result<Unit> = runCatching {
+        require(hash.isNotBlank()) { "Invalid torrent hash." }
+        require(trackerUrl.isNotBlank()) { "Tracker URL cannot be empty." }
+        executeWithRetry { liveApi ->
+            liveApi.addTrackers(hash = hash, urls = trackerUrl.trim())
+                .ensureSuccess("Add tracker failed.")
+        }
+    }
+
+    override suspend fun editTracker(
+        hash: String,
+        tracker: com.hjw.qbremote.data.model.TorrentTracker,
+        newUrl: String,
+    ): Result<Unit> = runCatching {
+        require(hash.isNotBlank()) { "Invalid torrent hash." }
+        val originalUrl = tracker.url.trim()
+        require(originalUrl.isNotBlank()) { "Original tracker URL cannot be empty." }
+        require(newUrl.isNotBlank()) { "New tracker URL cannot be empty." }
+        executeWithRetry { liveApi ->
+            liveApi.editTracker(
+                hash = hash,
+                originalUrl = originalUrl,
+                newUrl = newUrl.trim(),
+            ).ensureSuccess("Edit tracker failed.")
+        }
+    }
+
+    override suspend fun removeTracker(
+        hash: String,
+        tracker: com.hjw.qbremote.data.model.TorrentTracker,
+    ): Result<Unit> = runCatching {
+        require(hash.isNotBlank()) { "Invalid torrent hash." }
+        val trackerUrl = tracker.url.trim()
+        require(trackerUrl.isNotBlank()) { "Tracker URL cannot be empty." }
+        executeWithRetry { liveApi ->
+            liveApi.removeTrackers(hash = hash, urls = trackerUrl)
+                .ensureSuccess("Remove tracker failed.")
+        }
+    }
+
+    override suspend fun exportTorrentFile(hash: String): Result<ByteArray> = runCatching {
+        require(hash.isNotBlank()) { "Invalid torrent hash." }
+        val response = executeWithRetry { liveApi -> liveApi.exportTorrent(hash) }
+        response.ensureSuccess("Export torrent failed.")
+        response.body()?.bytes()
+            ?: throw IllegalStateException("Export torrent failed. Empty response body.")
+    }
+
+    override suspend fun fetchCategoryOptions(): Result<List<String>> = runCatching {
         val categories = executeWithRetry { liveApi -> liveApi.torrentCategories() }
         categories.keys
             .map { it.trim() }
@@ -134,12 +217,12 @@ class QbRepository {
             .sorted()
     }
 
-    suspend fun fetchTagOptions(): Result<List<String>> = runCatching {
+    override suspend fun fetchTagOptions(): Result<List<String>> = runCatching {
         val raw = executeWithRetry { liveApi -> liveApi.torrentTagsRaw() }
         parseTagOptions(raw)
     }
 
-    suspend fun fetchCountryPeerSnapshots(hashes: List<String>): Result<List<CountryPeerSnapshot>> = runCatching {
+    override suspend fun fetchCountryPeerSnapshots(hashes: List<String>): Result<List<CountryPeerSnapshot>> = runCatching {
         val snapshots = mutableListOf<CountryPeerSnapshot>()
         hashes
             .map { it.trim() }
@@ -152,7 +235,7 @@ class QbRepository {
         snapshots
     }
 
-    suspend fun renameTorrent(hash: String, name: String): Result<Unit> = runCatching {
+    override suspend fun renameTorrent(hash: String, name: String): Result<Unit> = runCatching {
         require(hash.isNotBlank()) { "Invalid torrent hash." }
         require(name.isNotBlank()) { "Name cannot be empty." }
         executeWithRetry { liveApi ->
@@ -160,7 +243,7 @@ class QbRepository {
         }
     }
 
-    suspend fun setTorrentLocation(hash: String, location: String): Result<Unit> = runCatching {
+    override suspend fun setTorrentLocation(hash: String, location: String): Result<Unit> = runCatching {
         require(hash.isNotBlank()) { "Invalid torrent hash." }
         require(location.isNotBlank()) { "Location cannot be empty." }
         executeWithRetry { liveApi ->
@@ -168,14 +251,14 @@ class QbRepository {
         }
     }
 
-    suspend fun setTorrentCategory(hash: String, category: String): Result<Unit> = runCatching {
+    override suspend fun setTorrentCategory(hash: String, category: String): Result<Unit> = runCatching {
         require(hash.isNotBlank()) { "Invalid torrent hash." }
         executeWithRetry { liveApi ->
             liveApi.setCategory(hash, category).ensureSuccess("Set category failed.")
         }
     }
 
-    suspend fun setTorrentTags(hash: String, oldTags: String, newTags: String): Result<Unit> = runCatching {
+    override suspend fun setTorrentTags(hash: String, oldTags: String, newTags: String): Result<Unit> = runCatching {
         require(hash.isNotBlank()) { "Invalid torrent hash." }
         val oldNormalized = oldTags.trim()
         val newNormalized = newTags.trim()
@@ -189,7 +272,7 @@ class QbRepository {
         }
     }
 
-    suspend fun setTorrentSpeedLimit(hash: String, downloadLimitBytes: Long, uploadLimitBytes: Long): Result<Unit> =
+    override suspend fun setTorrentSpeedLimit(hash: String, downloadLimitBytes: Long, uploadLimitBytes: Long): Result<Unit> =
         runCatching {
             require(hash.isNotBlank()) { "Invalid torrent hash." }
             executeWithRetry { liveApi ->
@@ -200,7 +283,7 @@ class QbRepository {
             }
         }
 
-    suspend fun setTorrentShareRatio(hash: String, ratioLimit: Double): Result<Unit> = runCatching {
+    override suspend fun setTorrentShareRatio(hash: String, ratioLimit: Double): Result<Unit> = runCatching {
         require(hash.isNotBlank()) { "Invalid torrent hash." }
         executeWithRetry { liveApi ->
             liveApi.setShareLimits(
@@ -212,7 +295,7 @@ class QbRepository {
         }
     }
 
-    suspend fun addTorrent(request: AddTorrentRequest): Result<Unit> = runCatching {
+    override suspend fun addTorrent(request: AddTorrentRequest): Result<Unit> = runCatching {
         val urlsText = request.urls.trim()
         require(urlsText.isNotBlank() || request.files.isNotEmpty()) {
             "请填写种子链接或选择种子文件。"
@@ -382,6 +465,7 @@ class QbRepository {
                             "服务器返回：认证失败次数过多，当前出口 IP 已被封禁。请在 qB WebUI 解除封禁或等待封禁时间结束后再试。详情：${loginResult.detail}"
                         )
                     }
+                    loginResult.wrongBackend?.let { throw it }
                     if (loginResult.retryableServerError) {
                         throw IOException(loginResult.detail)
                     }
@@ -426,6 +510,7 @@ class QbRepository {
         )
         if (v2Result.success) return v2Result
         if (v2Result.ipBanned) return v2Result
+        if (v2Result.wrongBackend != null) return v2Result
 
         if (!shouldTryLegacyLogin(v2Response, v2Result.detail)) {
             return v2Result
@@ -438,6 +523,7 @@ class QbRepository {
             passwordBlank = credentials.password.isBlank(),
         )
         if (legacyResult.success) return legacyResult
+        if (legacyResult.wrongBackend != null) return legacyResult
 
         return LoginResult(
             success = false,
@@ -459,10 +545,23 @@ class QbRepository {
             return LoginResult(success = true, detail = "$endpointLabel -> Ok.")
         }
 
+        val wrongBackend = detectWrongBackend(
+            response = response,
+            endpointLabel = endpointLabel,
+            responseText = loginText,
+        )
+        if (wrongBackend != null) {
+            return LoginResult(
+                success = false,
+                detail = wrongBackend.detail,
+                wrongBackend = wrongBackend,
+            )
+        }
+
         val detail = when {
             loginText.equals("Fails.", ignoreCase = true) && passwordBlank -> "Password is empty."
             loginText.equals("Fails.", ignoreCase = true) -> "Credential rejected (Fails.)."
-            loginText.isNotBlank() -> loginText
+            loginText.isNotBlank() -> summarizeResponseText(loginText)
             response.code() == 403 -> "Forbidden (check WebUI auth/CSRF settings)."
             response.code() == 401 -> "Unauthorized."
             !response.isSuccessful -> "HTTP ${response.code()}."
@@ -495,6 +594,26 @@ class QbRepository {
             normalized.contains("ip address has been banned") ||
             normalized.contains("too many failed") ||
             normalized.contains("banned")
+    }
+
+    private fun detectWrongBackend(
+        response: Response<String>,
+        endpointLabel: String,
+        responseText: String,
+    ): BackendConnectionError.WrongBackend? {
+        return detectTransmissionMismatchForQbResponse(
+            endpointLabel = endpointLabel,
+            responseText = responseText,
+            sessionHeader = response.headers()["X-Transmission-Session-Id"].orEmpty(),
+        )
+    }
+
+    private fun summarizeResponseText(text: String): String {
+        return summarizeQbLoginResponseText(text)
+    }
+
+    private fun looksLikeHtml(text: String): Boolean {
+        return looksLikeHtmlPayload(text)
     }
 
     private fun buildCredentialCandidates(settings: ConnectionSettings): List<EffectiveCredentials> {
@@ -540,6 +659,7 @@ class QbRepository {
         val detail: String,
         val retryableServerError: Boolean = false,
         val ipBanned: Boolean = false,
+        val wrongBackend: BackendConnectionError.WrongBackend? = null,
     )
 
     private class AuthLockedException(message: String) : IllegalStateException(message)
@@ -553,14 +673,10 @@ class QbRepository {
     }
 
     private fun buildApi(baseUrl: String, headerMode: HeaderMode): QbApi {
-        val logger = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BASIC
-        }
         val parsedBaseUrl = baseUrl.toHttpUrl()
 
         val clientBuilder = OkHttpClient.Builder()
             .cookieJar(SessionCookieJar())
-            .addInterceptor(logger)
             .connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(12, TimeUnit.SECONDS)
             .writeTimeout(12, TimeUnit.SECONDS)
@@ -888,5 +1004,51 @@ class QbRepository {
             }
         }
     }
+}
+
+internal fun detectTransmissionMismatchForQbResponse(
+    endpointLabel: String,
+    responseText: String,
+    sessionHeader: String,
+): BackendConnectionError.WrongBackend? {
+    val normalizedText = responseText.lowercase(Locale.US)
+    val looksLikeTransmissionHtml = looksLikeHtmlPayload(responseText) && (
+        normalizedText.contains("transmission web control") ||
+            normalizedText.contains("transmission") ||
+            normalizedText.contains("tr-web-control")
+        )
+    if (sessionHeader.isBlank() && !looksLikeTransmissionHtml) {
+        return null
+    }
+
+    val summary = summarizeQbLoginResponseText(responseText)
+    val detail = "$endpointLabel -> $summary"
+    return BackendConnectionError.WrongBackend(
+        expected = ServerBackendType.QBITTORRENT,
+        detected = ServerBackendType.TRANSMISSION,
+        attemptedEndpoint = endpointLabel,
+        detail = detail,
+    )
+}
+
+internal fun summarizeQbLoginResponseText(text: String): String {
+    val trimmed = text.trim()
+    if (trimmed.isBlank()) return "Unexpected response."
+    return Regex("<title>(.*?)</title>", RegexOption.IGNORE_CASE)
+        .find(trimmed)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?: trimmed
+            .replace(Regex("\\s+"), " ")
+            .take(160)
+}
+
+internal fun looksLikeHtmlPayload(text: String): Boolean {
+    val normalized = text.trim().lowercase(Locale.US)
+    return normalized.startsWith("<!doctype html") ||
+        normalized.startsWith("<html") ||
+        normalized.contains("<title>")
 }
 

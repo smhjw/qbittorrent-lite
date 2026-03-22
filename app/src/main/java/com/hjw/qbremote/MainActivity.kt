@@ -21,7 +21,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hjw.qbremote.data.AppLanguage
 import com.hjw.qbremote.data.AppTheme
 import com.hjw.qbremote.data.ConnectionStore
-import com.hjw.qbremote.data.QbRepository
+import com.hjw.qbremote.data.TorrentRepository
 import com.hjw.qbremote.ui.MainScreen
 import com.hjw.qbremote.ui.MainViewModel
 import com.hjw.qbremote.ui.theme.QBRemoteTheme
@@ -35,7 +35,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val connectionStore = ConnectionStore(applicationContext)
-        val repository = QbRepository()
+        val repository = TorrentRepository()
 
         lifecycleScope.launch {
             connectionStore.settingsFlow

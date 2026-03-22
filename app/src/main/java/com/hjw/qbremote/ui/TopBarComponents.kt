@@ -2,30 +2,24 @@ package com.hjw.qbremote.ui
 
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,15 +31,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hjw.qbremote.R
 import com.hjw.qbremote.data.AppTheme
 import com.hjw.qbremote.data.ConnectionSettings
 import com.hjw.qbremote.ui.theme.qbGlassCardColors
-import com.hjw.qbremote.ui.theme.qbGlassChipColor
 import com.hjw.qbremote.ui.theme.qbGlassOutlineColor
-import com.hjw.qbremote.ui.theme.qbGlassSubtleContainerColor
 
 @Composable
 internal fun DrawerThemeItem(
@@ -54,11 +47,6 @@ internal fun DrawerThemeItem(
     onApplyCustomTheme: (String, Boolean) -> Unit,
 ) {
     val context = LocalContext.current
-    val currentThemeLabel = when (settings.appTheme) {
-        AppTheme.DARK -> stringResource(R.string.theme_dark)
-        AppTheme.LIGHT -> stringResource(R.string.theme_light)
-        AppTheme.CUSTOM -> stringResource(R.string.theme_custom)
-    }
     val saveFailedText = stringResource(R.string.theme_custom_save_failed)
     val savedImageValid = remember(settings.customBackgroundImagePath) {
         isCustomBackgroundFileValid(settings.customBackgroundImagePath)
@@ -117,19 +105,13 @@ internal fun DrawerThemeItem(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = stringResource(R.string.menu_theme),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = currentThemeLabel,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Text(
+                text = stringResource(R.string.menu_theme),
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold,
+            )
             Text(
                 text = if (expanded) "^" else "v",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -159,7 +141,7 @@ internal fun DrawerThemeItem(
                     },
                 )
                 DrawerThemeChoiceItem(
-                    label = stringResource(R.string.theme_custom),
+                    label = stringResource(R.string.theme_custom_background),
                     selected = settings.appTheme == AppTheme.CUSTOM,
                     onClick = {
                         customEditorVisible = true
@@ -170,22 +152,12 @@ internal fun DrawerThemeItem(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 8.dp)
-                            .border(
-                                width = 1.dp,
-                                color = qbGlassOutlineColor(defaultAlpha = 0.24f),
-                                shape = RoundedCornerShape(16.dp),
-                            )
-                            .background(
-                                color = qbGlassSubtleContainerColor(),
-                                shape = RoundedCornerShape(16.dp),
-                            )
-                            .padding(12.dp),
+                            .padding(start = 12.dp, top = 2.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text(
                             text = statusText,
-                            style = MaterialTheme.typography.bodyMedium,
+                            style = MaterialTheme.typography.bodySmall,
                             color = statusColor,
                             fontWeight = FontWeight.Medium,
                         )
@@ -205,15 +177,10 @@ internal fun DrawerThemeItem(
                                     launcher.launch(
                                         PickVisualMediaRequest(
                                             ActivityResultContracts.PickVisualMedia.ImageOnly,
-                                        )
+                                        ),
                                     )
                                 },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .background(
-                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                                        shape = RoundedCornerShape(12.dp),
-                                    ),
+                                modifier = Modifier.weight(1f),
                             ) {
                                 Text(
                                     if (savedImageValid || pendingImageUri != null) {
@@ -249,12 +216,7 @@ internal fun DrawerThemeItem(
                                         )
                                     }
                                 },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .background(
-                                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f),
-                                        shape = RoundedCornerShape(12.dp),
-                                    ),
+                                modifier = Modifier.weight(1f),
                             ) {
                                 Text(stringResource(R.string.theme_custom_save_apply))
                             }
@@ -279,34 +241,19 @@ private fun DrawerThemeChoiceItem(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
-    val containerColor = if (selected) {
-        qbGlassChipColor()
-    } else {
-        qbGlassSubtleContainerColor()
-    }
-    val borderColor = if (selected) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.38f)
-    } else {
-        qbGlassOutlineColor(defaultAlpha = 0.24f)
-    }
     val contentColor = if (selected) {
         MaterialTheme.colorScheme.primary
     } else {
         MaterialTheme.colorScheme.onSurface
     }
 
-    Box(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(containerColor)
-            .border(
-                width = 1.dp,
-                color = borderColor,
-                shape = RoundedCornerShape(14.dp),
-            )
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 6.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = label,
@@ -314,31 +261,42 @@ private fun DrawerThemeChoiceItem(
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
         )
+        if (selected) {
+            Text(
+                text = "Selected",
+                color = contentColor,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
     }
 }
 
 @Composable
-internal fun TopBrandTitle() {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.92f))
+internal fun TopBrandTitle(
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+) {
+    val titleStyle = if (compact) {
+        MaterialTheme.typography.titleMedium.copy(
+            fontWeight = FontWeight.Medium,
+            fontSize = 15.sp,
+            letterSpacing = 0.sp,
         )
-        Text(
-            text = "qbitremote",
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.96f),
-            style = MaterialTheme.typography.titleMedium.copy(
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.1.sp,
-            ),
-            maxLines = 1,
+    } else {
+        MaterialTheme.typography.titleMedium.copy(
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.1.sp,
         )
     }
+    Text(
+        text = stringResource(R.string.app_name),
+        modifier = modifier,
+        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.96f),
+        style = titleStyle,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
 }
 
 @Composable
@@ -377,7 +335,6 @@ internal fun NeedConnectionCard(
                     Text(stringResource(R.string.go_to_settings))
                 }
             }
-
         }
     }
 }

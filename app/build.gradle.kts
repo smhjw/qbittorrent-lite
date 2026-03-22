@@ -37,8 +37,8 @@ android {
         applicationId = "com.hjw.qbremote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.1.7"
+        versionCode = 11
+        versionName = "0.1.10"
     }
 
     signingConfigs {
@@ -53,8 +53,13 @@ android {
     }
 
     buildTypes {
-        release {
+        debug {
             isMinifyEnabled = false
+            isShrinkResources = false
+        }
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
             if (hasReleaseSigningConfig) {
                 signingConfig = signingConfigs.getByName("release")
             }
@@ -83,9 +88,19 @@ android {
     }
 
     packaging {
+        jniLibs {
+            keepDebugSymbols += "**/libdatastore_shared_counter.so"
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+
+    lint {
+        // Newer AndroidX releases in lint currently require migrating the whole toolchain
+        // to AGP 8.9.1+ and compileSdk 36. We intentionally pin these dependencies until
+        // that broader upgrade is planned and validated end-to-end.
+        disable += "GradleDependency"
     }
 }
 
@@ -118,14 +133,13 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("androidx.security:security-crypto:1.1.0")
+    implementation("com.google.errorprone:error_prone_annotations:2.28.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
     implementation("com.squareup.retrofit2:converter-scalars:2.11.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
-
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
 }

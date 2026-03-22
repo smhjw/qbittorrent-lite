@@ -3,18 +3,23 @@
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import android.util.Log
 import com.hjw.qbremote.data.AppLanguage
 import com.hjw.qbremote.data.AppTheme
-import com.hjw.qbremote.data.ChartSortMode
+import com.hjw.qbremote.data.BackendConnectionError
+import com.hjw.qbremote.data.CachedDashboardServerSnapshot
 import com.hjw.qbremote.data.ConnectionSettings
 import com.hjw.qbremote.data.ConnectionStore
 import com.hjw.qbremote.data.CachedDailyTagUploadStat
-import com.hjw.qbremote.data.CountryDistributionSample
 import com.hjw.qbremote.data.DailyCountryUploadTrackingSnapshot
 import com.hjw.qbremote.data.DailyUploadTrackingSnapshot
 import com.hjw.qbremote.data.DashboardCacheSnapshot
-import com.hjw.qbremote.data.QbRepository
+import com.hjw.qbremote.data.ServerBackendType
+import com.hjw.qbremote.data.ServerCapabilities
+import com.hjw.qbremote.data.ServerDashboardPreferences
 import com.hjw.qbremote.data.ServerProfile
+import com.hjw.qbremote.data.TorrentRepository
+import com.hjw.qbremote.data.defaultCapabilitiesFor
 import com.hjw.qbremote.data.model.AddTorrentFile
 import com.hjw.qbremote.data.model.AddTorrentRequest
 import com.hjw.qbremote.data.model.CountryPeerSnapshot
@@ -31,6 +36,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -43,6 +49,7 @@ import java.util.Locale
 
 enum class RefreshScene {
     DASHBOARD,
+    SERVER,
     TORRENT_DETAIL,
     SETTINGS,
 }
@@ -54,10 +61,40 @@ data class DailyTagUploadStat(
     val isNoTag: Boolean = false,
 )
 
+data class RealtimeSpeedPoint(
+    val timestamp: Long = 0L,
+    val uploadSpeed: Long = 0L,
+    val downloadSpeed: Long = 0L,
+    val onlineServerCount: Int = 0,
+)
+
+data class DashboardAggregateState(
+    val transferInfo: TransferInfo = TransferInfo(),
+    val torrents: List<TorrentInfo> = emptyList(),
+    val dailyTagUploadDate: String = "",
+    val dailyTagUploadStats: List<DailyTagUploadStat> = emptyList(),
+    val dailyCountryUploadDate: String = "",
+    val dailyCountryUploadStats: List<CountryUploadRecord> = emptyList(),
+    val realtimeSpeedSeries: List<RealtimeSpeedPoint> = emptyList(),
+    val totalServerCount: Int = 0,
+    val categoryCoverageServerCount: Int = 0,
+    val countryCoverageServerCount: Int = 0,
+)
+
+data class PendingBackendRepair(
+    val profileId: String,
+    val profileName: String,
+    val expectedBackend: ServerBackendType,
+    val detectedBackend: ServerBackendType,
+    val detail: String = "",
+)
+
 data class MainUiState(
     val settings: ConnectionSettings = ConnectionSettings(),
     val serverProfiles: List<ServerProfile> = emptyList(),
     val activeServerProfileId: String? = null,
+    val activeCapabilities: ServerCapabilities = defaultCapabilitiesFor(ServerBackendType.QBITTORRENT),
+    val aggregateOnlineServerCount: Int = 0,
     val isConnecting: Boolean = false,
     val isManualRefreshing: Boolean = false,
     val connected: Boolean = false,
@@ -75,16 +112,30 @@ data class MainUiState(
     val dailyTagUploadStats: List<DailyTagUploadStat> = emptyList(),
     val dailyCountryUploadDate: String = "",
     val dailyCountryUploadStats: List<CountryUploadRecord> = emptyList(),
+    val dashboardServerSnapshots: List<CachedDashboardServerSnapshot> = emptyList(),
+    val serverDashboardPreferences: Map<String, ServerDashboardPreferences> = emptyMap(),
+    val selectedDashboardProfileId: String? = null,
+    val dashboardSessionToken: Long = 0L,
+    val dashboardAggregate: DashboardAggregateState = DashboardAggregateState(),
     val dashboardCacheHydrated: Boolean = false,
     val hasDashboardSnapshot: Boolean = false,
+    val startupRestoreComplete: Boolean = false,
     val refreshScene: RefreshScene = RefreshScene.DASHBOARD,
-    val pendingHashes: Set<String> = emptySet(),
+    val pendingActionKeys: Set<String> = emptySet(),
+    val pendingBackendRepair: PendingBackendRepair? = null,
     val errorMessage: String? = null,
 )
 
+internal fun buildPendingActionKey(
+    profileId: String,
+    hash: String,
+): String {
+    return "${profileId.trim()}|${hash.trim()}"
+}
+
 class MainViewModel(
     private val connectionStore: ConnectionStore,
-    private val repository: QbRepository,
+    private val repository: TorrentRepository,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -93,10 +144,20 @@ class MainViewModel(
     private var hourlyBoundaryRefreshJob: Job? = null
     private var countryPeerTrackerJob: Job? = null
     private var dashboardCacheHydrationJob: Job? = null
+    private var dashboardAggregationJob: Job? = null
+    private var serverSchedulerJob: Job? = null
     private var autoConnectAttempted = false
     private var isRefreshInProgress = false
     private var hydratedDashboardScopeKey: String? = null
+    private var initialSettingsLoaded = false
+    private var initialServerProfilesLoaded = false
+    private var initialDashboardCacheHydrated = false
+    private var initialDashboardSnapshotsHydrated = false
+    private var activeProfileRequestVersion = 0L
     private val countryTrackingMutex = Mutex()
+    private val serverRefreshMutex = Mutex()
+    private val nextServerRefreshAt = mutableMapOf<String, Long>()
+    private val homeRealtimeSpeedSeries = mutableListOf<RealtimeSpeedPoint>()
     private var dailyUploadTrackingScopeKey: String? = null
     private var dailyUploadBaselineDate: LocalDate? = null
     private val dailyUploadBaselineByTorrent = mutableMapOf<String, Long>()
@@ -107,29 +168,95 @@ class MainViewModel(
     private val dailyCountryPeerSnapshots = mutableMapOf<String, CountryPeerSnapshot>()
     private val dailyCountryLastSeenByTorrent = mutableMapOf<String, Long>()
     private val activeCountryTrackedHashes = mutableMapOf<String, Long>()
-    private val recentCountryDistributionSamples = mutableListOf<CountryDistributionSample>()
 
     init {
         viewModelScope.launch {
             connectionStore.migrateLegacyPasswordIfNeeded()
+            connectionStore.cleanupLegacyGlobalChartSettingsIfNeeded()
             launch {
                 connectionStore.settingsFlow.collect { settings ->
-                    _uiState.update { current -> current.copy(settings = settings) }
+                    _uiState.update { current ->
+                        current.copy(
+                            settings = settings,
+                            activeCapabilities = repository.capabilitiesFor(settings),
+                        )
+                    }
                     hydrateDashboardCacheForCurrentScope()
-                    autoConnectIfNeeded(settings)
+                    markInitialSettingsLoaded()
                 }
             }
             launch {
                 connectionStore.serverProfilesFlow.collect { profilesState ->
+                    val previousActiveProfileId = _uiState.value.activeServerProfileId
+                    if (profilesState.activeProfileId != previousActiveProfileId) {
+                        bumpActiveProfileRequestVersion()
+                    }
+                    repository.selectProfile(profilesState.activeProfileId)
+                    val dashboardPreferences = connectionStore.loadServerDashboardPreferences()
                     _uiState.update { current ->
                         current.copy(
                             serverProfiles = profilesState.profiles,
+                            serverDashboardPreferences = dashboardPreferences
+                                .filterKeys { profileId -> profilesState.profiles.any { it.id == profileId } },
                             activeServerProfileId = profilesState.activeProfileId,
+                            selectedDashboardProfileId = current.selectedDashboardProfileId
+                                ?.takeIf { selected -> profilesState.profiles.any { it.id == selected } }
+                                ?: profilesState.activeProfileId
+                                ?: profilesState.profiles.firstOrNull()?.id,
+                            pendingBackendRepair = current.pendingBackendRepair
+                                ?.takeIf { pending -> profilesState.profiles.any { it.id == pending.profileId } },
                         )
                     }
                     hydrateDashboardCacheForCurrentScope()
+                    hydrateDashboardServerSnapshots()
+                    synchronizeServerScheduler()
+                    autoConnectIfNeeded(_uiState.value.settings)
+                    markInitialServerProfilesLoaded()
                 }
             }
+        }
+    }
+
+    private fun markInitialSettingsLoaded() {
+        if (!initialSettingsLoaded) {
+            initialSettingsLoaded = true
+            maybeMarkStartupRestoreComplete()
+        }
+    }
+
+    private fun markInitialServerProfilesLoaded() {
+        if (!initialServerProfilesLoaded) {
+            initialServerProfilesLoaded = true
+            maybeMarkStartupRestoreComplete()
+        }
+    }
+
+    private fun markInitialDashboardCacheHydrated() {
+        if (!initialDashboardCacheHydrated) {
+            initialDashboardCacheHydrated = true
+            maybeMarkStartupRestoreComplete()
+        }
+    }
+
+    private fun markInitialDashboardSnapshotsHydrated() {
+        if (!initialDashboardSnapshotsHydrated) {
+            initialDashboardSnapshotsHydrated = true
+            maybeMarkStartupRestoreComplete()
+        }
+    }
+
+    private fun maybeMarkStartupRestoreComplete() {
+        if (
+            _uiState.value.startupRestoreComplete ||
+            !initialSettingsLoaded ||
+            !initialServerProfilesLoaded ||
+            !initialDashboardCacheHydrated ||
+            !initialDashboardSnapshotsHydrated
+        ) {
+            return
+        }
+        _uiState.update { current ->
+            if (current.startupRestoreComplete) current else current.copy(startupRestoreComplete = true)
         }
     }
 
@@ -145,13 +272,10 @@ class MainViewModel(
     fun updateUseHttps(value: Boolean) = updateSettings { it.copy(useHttps = value) }
     fun updateUsername(value: String) = updateSettings { it.copy(username = value) }
     fun updatePassword(value: String) = updateSettings { it.copy(password = value) }
+    fun updateServerBackendType(value: ServerBackendType) = updateSettings { it.copy(serverBackendType = value) }
     fun updateRefreshSeconds(value: String) {
         val sec = value.toIntOrNull()?.coerceIn(5, 120) ?: 5
         updateSettings { it.copy(refreshSeconds = sec) }
-    }
-
-    fun updateShowSpeedTotals(value: Boolean) = updateAndPersistSettings {
-        it.copy(showSpeedTotals = value)
     }
 
     fun updateAppLanguage(value: AppLanguage) = updateAndPersistSettings {
@@ -171,38 +295,6 @@ class MainViewModel(
             customBackgroundImagePath = imagePath,
             customBackgroundToneIsLight = toneIsLight,
         )
-    }
-
-    fun updateEnableServerGrouping(value: Boolean) = updateAndPersistSettings {
-        it.copy(enableServerGrouping = value)
-    }
-
-    fun updateShowChartPanel(value: Boolean) = updateAndPersistSettings {
-        it.copy(showChartPanel = value)
-    }
-
-    fun updateShowCountryFlowCard(value: Boolean) = updateAndPersistSettings {
-        it.copy(showCountryFlowCard = value)
-    }
-
-    fun updateShowUploadDistributionCard(value: Boolean) = updateAndPersistSettings {
-        it.copy(showUploadDistributionCard = value)
-    }
-
-    fun updateShowCategoryDistributionCard(value: Boolean) = updateAndPersistSettings {
-        it.copy(showCategoryDistributionCard = value)
-    }
-
-    fun updateDashboardCardOrder(value: String) = updateAndPersistSettings {
-        it.copy(dashboardCardOrder = value)
-    }
-
-    fun updateChartShowSiteName(value: Boolean) = updateAndPersistSettings {
-        it.copy(chartShowSiteName = value)
-    }
-
-    fun updateChartSortMode(value: ChartSortMode) = updateAndPersistSettings {
-        it.copy(chartSortMode = value)
     }
 
     fun updateDeleteFilesDefault(value: Boolean) = updateAndPersistSettings {
@@ -235,12 +327,107 @@ class MainViewModel(
         }
     }
 
+    fun prepareServerDashboardTransition(profileId: String) {
+        val normalizedProfileId = profileId.trim()
+        if (normalizedProfileId.isBlank()) return
+        _uiState.update { current ->
+            current.copy(
+                selectedDashboardProfileId = normalizedProfileId,
+                dashboardSessionToken = current.dashboardSessionToken + 1L,
+                isConnecting = true,
+                connected = false,
+                errorMessage = null,
+                pendingBackendRepair = current.pendingBackendRepair
+                    ?.takeUnless { it.profileId != normalizedProfileId },
+                serverVersion = "-",
+                transferInfo = TransferInfo(),
+                torrents = emptyList(),
+                dailyTagUploadDate = "",
+                dailyTagUploadStats = emptyList(),
+                dailyCountryUploadDate = "",
+                dailyCountryUploadStats = emptyList(),
+                categoryOptions = emptyList(),
+                tagOptions = emptyList(),
+                dashboardCacheHydrated = false,
+                hasDashboardSnapshot = false,
+                detailHash = "",
+                detailLoading = false,
+                detailProperties = null,
+                detailFiles = emptyList(),
+                detailTrackers = emptyList(),
+                pendingActionKeys = emptySet(),
+            )
+        }
+    }
+
     fun connect() {
-        connectInternal(persistSettings = true, showErrorOnFailure = true)
+        viewModelScope.launch {
+            runCatching {
+                val currentState = _uiState.value
+                val targetProfileId = when {
+                    !currentState.activeServerProfileId.isNullOrBlank() -> currentState.activeServerProfileId
+                    currentState.settings.host.trim().isNotBlank() && currentState.settings.username.trim().isNotBlank() -> {
+                        connectionStore.save(currentState.settings)
+                        connectionStore.serverProfilesFlow.first().activeProfileId
+                    }
+
+                    else -> null
+                } ?: error("请先添加服务器。")
+
+                val targetSettings = connectionStore.switchToServerProfile(targetProfileId)
+                repository.selectProfile(targetProfileId)
+                bumpActiveProfileRequestVersion()
+                _uiState.update { current ->
+                    current.copy(
+                        settings = targetSettings,
+                        activeServerProfileId = targetProfileId,
+                        selectedDashboardProfileId = targetProfileId,
+                        dashboardSessionToken = current.dashboardSessionToken + 1L,
+                        activeCapabilities = repository.capabilitiesFor(targetSettings),
+                        isConnecting = true,
+                        connected = false,
+                        pendingBackendRepair = null,
+                        errorMessage = null,
+                        serverVersion = "-",
+                        transferInfo = TransferInfo(),
+                        torrents = emptyList(),
+                        dailyTagUploadDate = "",
+                        dailyTagUploadStats = emptyList(),
+                        dailyCountryUploadDate = "",
+                        dailyCountryUploadStats = emptyList(),
+                        categoryOptions = emptyList(),
+                        tagOptions = emptyList(),
+                        detailHash = "",
+                        detailLoading = false,
+                        detailProperties = null,
+                        detailFiles = emptyList(),
+                        detailTrackers = emptyList(),
+                        pendingActionKeys = emptySet(),
+                    )
+                }
+                hydrateDashboardCacheForCurrentScope(force = true)
+                synchronizeServerScheduler()
+                nextServerRefreshAt[targetProfileId] = 0L
+                refreshServerSnapshotNow(
+                    profileId = targetProfileId,
+                    showSelectedError = true,
+                    forceSettings = targetSettings,
+                )
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        isConnecting = false,
+                        connected = false,
+                        errorMessage = error.message ?: "连接服务器失败",
+                    )
+                }
+            }
+        }
     }
 
     fun addServerProfile(
         name: String,
+        backendType: ServerBackendType,
         host: String,
         port: String,
         useHttps: Boolean,
@@ -249,30 +436,32 @@ class MainViewModel(
         refreshSeconds: String,
     ) {
         viewModelScope.launch {
-            runCatching {
-                val current = _uiState.value.settings
-                val normalizedHost = host.trim()
-                val parsed = parseHostInputHints(normalizedHost)
-                val resolvedPort = parsed?.port ?: (port.toIntOrNull() ?: 8080)
-                val resolvedUseHttps = parsed?.useHttps ?: useHttps
-                val nextSettings = current.copy(
-                    host = normalizedHost,
-                    port = resolvedPort.coerceIn(1, 65535),
-                    useHttps = resolvedUseHttps,
-                    username = username.trim(),
+            val result = runCatching {
+                val nextSettings = buildProfileSettingsDraft(
+                    backendType = backendType,
+                    host = host,
+                    port = port,
+                    useHttps = useHttps,
+                    username = username,
                     password = password,
-                    refreshSeconds = (refreshSeconds.toIntOrNull() ?: 5).coerceIn(5, 120),
+                    refreshSeconds = refreshSeconds,
                 )
-                require(nextSettings.host.isNotBlank()) { "主机不能为空" }
-                require(nextSettings.username.isNotBlank()) { "用户名不能为空" }
 
                 val profile = connectionStore.addServerProfile(name = name, settings = nextSettings)
                 val switched = connectionStore.switchToServerProfile(profile.id)
-                _uiState.update {
-                    it.copy(
+                repository.selectProfile(profile.id)
+                bumpActiveProfileRequestVersion()
+                _uiState.update { current ->
+                    current.copy(
                         settings = switched,
                         activeServerProfileId = profile.id,
+                        selectedDashboardProfileId = profile.id,
+                        dashboardSessionToken = current.dashboardSessionToken + 1L,
+                        activeCapabilities = repository.capabilitiesFor(switched),
+                        isConnecting = true,
                         connected = false,
+                        pendingBackendRepair = null,
+                        errorMessage = null,
                         serverVersion = "-",
                         transferInfo = TransferInfo(),
                         torrents = emptyList(),
@@ -280,66 +469,438 @@ class MainViewModel(
                         dailyTagUploadStats = emptyList(),
                         dailyCountryUploadDate = "",
                         dailyCountryUploadStats = emptyList(),
-                        dashboardCacheHydrated = false,
-                        hasDashboardSnapshot = false,
+                        categoryOptions = emptyList(),
+                        tagOptions = emptyList(),
+                        detailHash = "",
+                        detailLoading = false,
+                        detailProperties = null,
+                        detailFiles = emptyList(),
+                        detailTrackers = emptyList(),
+                        pendingActionKeys = emptySet(),
                     )
                 }
-            }.onSuccess {
-                hydrateDashboardCacheForCurrentScope(force = true)
-                resetDailyUploadTrackingState()
-                resetDailyCountryUploadTrackingState()
-                connectInternal(persistSettings = false, showErrorOnFailure = true)
-            }.onFailure { error ->
+            }
+            result.onFailure { error ->
                 _uiState.update {
                     it.copy(errorMessage = error.message ?: "添加服务器失败")
+                }
+            }
+            if (result.isSuccess) {
+                hydrateDashboardCacheForCurrentScope(force = true)
+                synchronizeServerScheduler()
+                val profileId = _uiState.value.activeServerProfileId ?: return@launch
+                nextServerRefreshAt[profileId] = 0L
+                refreshServerSnapshotNow(profileId = profileId, showSelectedError = true)
+            }
+        }
+    }
+
+    fun updateServerProfile(
+        profileId: String,
+        name: String,
+        backendType: ServerBackendType,
+        host: String,
+        port: String,
+        useHttps: Boolean,
+        username: String,
+        password: String,
+        refreshSeconds: String,
+    ) {
+        if (profileId.isBlank()) return
+        viewModelScope.launch {
+            val wasActive = _uiState.value.activeServerProfileId == profileId
+            val result = runCatching {
+                val existingSettings = connectionStore.loadSettingsForProfile(profileId)
+                    ?: error("服务器配置不存在")
+                val nextSettings = buildProfileSettingsDraft(
+                    baseSettings = existingSettings,
+                    backendType = backendType,
+                    host = host,
+                    port = port,
+                    useHttps = useHttps,
+                    username = username,
+                    password = password.ifBlank { existingSettings.password },
+                    refreshSeconds = refreshSeconds,
+                )
+                connectionStore.updateServerProfile(
+                    profileId = profileId,
+                    name = name,
+                    settings = nextSettings,
+                    passwordOverride = password.takeIf { it.isNotBlank() },
+                )
+                repository.removeProfile(profileId)
+                nextServerRefreshAt[profileId] = 0L
+                if (wasActive) {
+                    val switched = connectionStore.switchToServerProfile(profileId)
+                    repository.selectProfile(profileId)
+                    bumpActiveProfileRequestVersion()
+                    _uiState.update { current ->
+                        current.copy(
+                            settings = switched,
+                            activeServerProfileId = profileId,
+                            selectedDashboardProfileId = profileId,
+                            dashboardSessionToken = current.dashboardSessionToken + 1L,
+                            activeCapabilities = repository.capabilitiesFor(switched),
+                            isConnecting = true,
+                            connected = false,
+                            pendingBackendRepair = null,
+                            errorMessage = null,
+                            serverVersion = "-",
+                            transferInfo = TransferInfo(),
+                            torrents = emptyList(),
+                            dailyTagUploadDate = "",
+                            dailyTagUploadStats = emptyList(),
+                            dailyCountryUploadDate = "",
+                            dailyCountryUploadStats = emptyList(),
+                            categoryOptions = emptyList(),
+                            tagOptions = emptyList(),
+                            detailHash = "",
+                            detailLoading = false,
+                            detailProperties = null,
+                            detailFiles = emptyList(),
+                            detailTrackers = emptyList(),
+                            pendingActionKeys = emptySet(),
+                        )
+                    }
+                }
+            }
+            result.onFailure { error ->
+                _uiState.update {
+                    it.copy(errorMessage = error.message ?: "更新服务器失败")
+                }
+            }
+            if (result.isSuccess) {
+                hydrateDashboardServerSnapshots()
+                synchronizeServerScheduler()
+                refreshServerSnapshotNow(profileId = profileId, showSelectedError = wasActive)
+            }
+        }
+    }
+
+    fun deleteServerProfile(profileId: String) {
+        if (profileId.isBlank()) return
+        viewModelScope.launch {
+            val result = runCatching {
+                connectionStore.deleteServerProfile(profileId)
+            }
+            result.onFailure { error ->
+                _uiState.update {
+                    it.copy(errorMessage = error.message ?: "删除服务器失败")
+                }
+            }
+            result.getOrNull()?.let { resultValue ->
+                repository.removeProfile(profileId)
+                nextServerRefreshAt.remove(profileId)
+                hydrateDashboardServerSnapshots()
+
+                val nextProfileId = resultValue.activeProfileId
+                if (nextProfileId.isNullOrBlank()) {
+                    serverSchedulerJob?.cancel()
+                    serverSchedulerJob = null
+                    repository.clearAllSessions()
+                    bumpActiveProfileRequestVersion()
+                    _uiState.update { current ->
+                        current.copy(
+                            activeServerProfileId = null,
+                            selectedDashboardProfileId = null,
+                            dashboardSessionToken = current.dashboardSessionToken + 1L,
+                            connected = false,
+                            isConnecting = false,
+                            serverVersion = "-",
+                            transferInfo = TransferInfo(),
+                            torrents = emptyList(),
+                            dailyTagUploadDate = "",
+                            dailyTagUploadStats = emptyList(),
+                            dailyCountryUploadDate = "",
+                            dailyCountryUploadStats = emptyList(),
+                            dashboardServerSnapshots = emptyList(),
+                            dashboardAggregate = DashboardAggregateState(),
+                            categoryOptions = emptyList(),
+                            tagOptions = emptyList(),
+                            pendingBackendRepair = null,
+                            detailHash = "",
+                            detailLoading = false,
+                            detailProperties = null,
+                            detailFiles = emptyList(),
+                            detailTrackers = emptyList(),
+                            pendingActionKeys = emptySet(),
+                        )
+                    }
+                } else {
+                    repository.selectProfile(nextProfileId)
+                    val nextSettings = resultValue.settings
+                        ?: connectionStore.loadSettingsForProfile(nextProfileId)
+                        ?: _uiState.value.settings
+                    bumpActiveProfileRequestVersion()
+                    _uiState.update { current ->
+                        current.copy(
+                            settings = nextSettings,
+                            activeServerProfileId = nextProfileId,
+                            selectedDashboardProfileId = nextProfileId,
+                            dashboardSessionToken = current.dashboardSessionToken + 1L,
+                            activeCapabilities = repository.capabilitiesFor(nextSettings),
+                            isConnecting = true,
+                            connected = false,
+                            pendingBackendRepair = null,
+                            errorMessage = null,
+                            serverVersion = "-",
+                            transferInfo = TransferInfo(),
+                            torrents = emptyList(),
+                            dailyTagUploadDate = "",
+                            dailyTagUploadStats = emptyList(),
+                            dailyCountryUploadDate = "",
+                            dailyCountryUploadStats = emptyList(),
+                            categoryOptions = emptyList(),
+                            tagOptions = emptyList(),
+                            detailHash = "",
+                            detailLoading = false,
+                            detailProperties = null,
+                            detailFiles = emptyList(),
+                            detailTrackers = emptyList(),
+                            pendingActionKeys = emptySet(),
+                        )
+                    }
+                    hydrateDashboardCacheForCurrentScope(force = true)
+                    synchronizeServerScheduler()
+                    nextServerRefreshAt[nextProfileId] = 0L
+                    refreshServerSnapshotNow(profileId = nextProfileId, showSelectedError = false)
                 }
             }
         }
     }
 
     fun switchServerProfile(profileId: String) {
-        if (profileId.isBlank()) return
+        val normalizedProfileId = profileId.trim()
+        if (normalizedProfileId.isBlank()) return
+        prepareServerDashboardTransition(normalizedProfileId)
         viewModelScope.launch {
-            runCatching {
-                val switched = connectionStore.switchToServerProfile(profileId)
-                _uiState.update {
-                    it.copy(
+            val result = runCatching {
+                val switched = connectionStore.switchToServerProfile(normalizedProfileId)
+                repository.selectProfile(normalizedProfileId)
+                bumpActiveProfileRequestVersion()
+                _uiState.update { current ->
+                    current.copy(
                         settings = switched,
-                        activeServerProfileId = profileId,
-                        connected = false,
-                        serverVersion = "-",
-                        transferInfo = TransferInfo(),
-                        torrents = emptyList(),
-                        dailyTagUploadDate = "",
-                        dailyTagUploadStats = emptyList(),
-                        dailyCountryUploadDate = "",
-                        dailyCountryUploadStats = emptyList(),
-                        dashboardCacheHydrated = false,
-                        hasDashboardSnapshot = false,
-                        detailHash = "",
-                        detailProperties = null,
-                        detailFiles = emptyList(),
-                        detailTrackers = emptyList(),
+                        activeServerProfileId = normalizedProfileId,
+                        selectedDashboardProfileId = normalizedProfileId,
+                        activeCapabilities = repository.capabilitiesFor(switched),
+                        isConnecting = true,
+                        pendingBackendRepair = null,
                     )
                 }
-            }.onSuccess {
-                hydrateDashboardCacheForCurrentScope(force = true)
-                resetDailyUploadTrackingState()
-                resetDailyCountryUploadTrackingState()
-                connectInternal(persistSettings = false, showErrorOnFailure = true)
-            }.onFailure { error ->
+            }
+            result.onFailure { error ->
                 _uiState.update {
                     it.copy(errorMessage = error.message ?: "切换服务器失败")
                 }
             }
+            if (result.isSuccess) {
+                hydrateDashboardCacheForCurrentScope(force = true)
+                synchronizeServerScheduler()
+                nextServerRefreshAt[normalizedProfileId] = 0L
+                refreshServerSnapshotNow(profileId = normalizedProfileId, showSelectedError = true)
+            }
+        }
+    }
+
+    fun selectDashboardProfile(profileId: String) {
+        if (profileId.isBlank()) return
+        switchServerProfile(profileId)
+    }
+
+    fun reorderServerProfiles(profileIds: List<String>) {
+        val normalizedIds = profileIds.map { it.trim() }.filter { it.isNotBlank() }
+        if (normalizedIds.isEmpty()) return
+        viewModelScope.launch {
+            runCatching {
+                connectionStore.reorderServerProfiles(normalizedIds)
+            }.onFailure { error ->
+                _uiState.update { current ->
+                    current.copy(errorMessage = error.message ?: "调整服务器顺序失败")
+                }
+            }
+        }
+    }
+
+    fun updateServerDashboardCardVisibility(
+        profileId: String,
+        card: DashboardChartCard,
+        visible: Boolean,
+        onComplete: (Boolean) -> Unit = {},
+    ) {
+        if (profileId.isBlank()) return
+        viewModelScope.launch {
+            val fallbackSettings = connectionStore.loadSettingsForProfile(profileId) ?: _uiState.value.settings
+            runCatching {
+                connectionStore.updateServerDashboardPreferences(profileId, fallbackSettings) { current ->
+                    val visibleCards = current.visibleCards.toMutableList()
+                    if (visible) {
+                        if (!visibleCards.contains(card.storageKey)) visibleCards += card.storageKey
+                    } else {
+                        visibleCards.remove(card.storageKey)
+                    }
+                    current.copy(visibleCards = visibleCards)
+                }
+            }.onSuccess { preferences ->
+                _uiState.update { current ->
+                    current.copy(
+                        serverDashboardPreferences = current.serverDashboardPreferences + (profileId to preferences),
+                    )
+                }
+                onComplete(true)
+            }.onFailure { error ->
+                _uiState.update { current ->
+                    current.copy(errorMessage = error.message ?: "更新图表显示失败")
+                }
+                onComplete(false)
+            }
+        }
+    }
+
+    fun updateServerDashboardCardOrder(
+        profileId: String,
+        order: List<DashboardChartCard>,
+        onComplete: (Boolean) -> Unit = {},
+    ) {
+        if (profileId.isBlank()) return
+        viewModelScope.launch {
+            val fallbackSettings = connectionStore.loadSettingsForProfile(profileId) ?: _uiState.value.settings
+            runCatching {
+                connectionStore.updateServerDashboardPreferences(profileId, fallbackSettings) { current ->
+                    current.copy(cardOrder = order.joinToString(",") { it.storageKey })
+                }
+            }.onSuccess { preferences ->
+                _uiState.update { current ->
+                    current.copy(
+                        serverDashboardPreferences = current.serverDashboardPreferences + (profileId to preferences),
+                    )
+                }
+                onComplete(true)
+            }.onFailure { error ->
+                _uiState.update { current ->
+                    current.copy(errorMessage = error.message ?: "更新图表排序失败")
+                }
+                onComplete(false)
+            }
+        }
+    }
+
+    fun resetServerDashboardPreferences(
+        profileId: String,
+        onComplete: (Boolean) -> Unit = {},
+    ) {
+        if (profileId.isBlank()) return
+        viewModelScope.launch {
+            val fallbackSettings = connectionStore.loadSettingsForProfile(profileId) ?: _uiState.value.settings
+            val defaults = defaultServerDashboardPreferences(fallbackSettings)
+            runCatching {
+                connectionStore.saveServerDashboardPreferences(profileId, defaults)
+                defaults
+            }.onSuccess { preferences ->
+                _uiState.update { current ->
+                    current.copy(
+                        serverDashboardPreferences = current.serverDashboardPreferences + (profileId to preferences),
+                    )
+                }
+                onComplete(true)
+            }.onFailure { error ->
+                _uiState.update { current ->
+                    current.copy(errorMessage = error.message ?: "恢复图表设置失败")
+                }
+                onComplete(false)
+            }
+        }
+    }
+
+    fun markServerStackReorderHintSeen() = updateAndPersistSettings { current ->
+        current.copy(hasSeenServerStackReorderHint = true)
+    }
+
+    fun markServerDashboardSwipeHintSeen() = updateAndPersistSettings { current ->
+        current.copy(hasSeenServerDashboardSwipeHint = true)
+    }
+
+    fun markServerDashboardCardHintSeen() = updateAndPersistSettings { current ->
+        current.copy(hasSeenServerDashboardCardHint = true)
+    }
+
+    fun exportTorrentFile(
+        hash: String,
+        onSuccess: (ByteArray) -> Unit,
+    ) {
+        val profileId = _uiState.value.activeServerProfileId?.trim().orEmpty()
+        val normalizedHash = hash.trim()
+        if (profileId.isBlank() || normalizedHash.isBlank()) return
+        val requestVersion = currentActiveProfileRequestVersion()
+        viewModelScope.launch {
+            repository.exportTorrentFile(profileId, normalizedHash)
+                .onSuccess { bytes -> onSuccess(bytes) }
+                .onFailure { error ->
+                    if (isActiveProfileRequestValid(profileId, requestVersion)) {
+                        _uiState.update {
+                            it.copy(errorMessage = error.message ?: "导出种子失败")
+                        }
+                    }
+                }
         }
     }
 
     private fun autoConnectIfNeeded(settings: ConnectionSettings) {
         if (autoConnectAttempted) return
         if (settings.host.isBlank() || settings.username.isBlank()) return
+        val state = _uiState.value
+        if (state.serverProfiles.isNotEmpty() && state.activeServerProfileId.isNullOrBlank()) return
         autoConnectAttempted = true
         connectInternal(persistSettings = false, showErrorOnFailure = false)
+    }
+
+    private fun defaultServerDashboardPreferences(settings: ConnectionSettings): ServerDashboardPreferences {
+        val isTransmission = settings.serverBackendType == ServerBackendType.TRANSMISSION
+        val defaultKeys = if (isTransmission) {
+            listOf(
+                DashboardChartCard.CATEGORY_SHARE.storageKey,
+                DashboardChartCard.TAG_UPLOAD.storageKey,
+                DashboardChartCard.TORRENT_STATE.storageKey,
+                DashboardChartCard.TRACKER_SITE.storageKey,
+            )
+        } else {
+            listOf(
+                DashboardChartCard.COUNTRY_FLOW.storageKey,
+                DashboardChartCard.CATEGORY_SHARE.storageKey,
+                DashboardChartCard.DAILY_UPLOAD.storageKey,
+            )
+        }
+        return ServerDashboardPreferences(
+            visibleCards = defaultKeys,
+            cardOrder = defaultKeys.joinToString(","),
+        )
+    }
+
+    private fun bumpActiveProfileRequestVersion() {
+        activeProfileRequestVersion += 1
+    }
+
+    private fun currentActiveProfileRequestVersion(): Long = activeProfileRequestVersion
+
+    private fun isActiveProfileRequestValid(
+        profileId: String,
+        requestVersion: Long,
+    ): Boolean {
+        val normalizedProfileId = profileId.trim()
+        return normalizedProfileId.isNotBlank() &&
+            _uiState.value.activeServerProfileId == normalizedProfileId &&
+            activeProfileRequestVersion == requestVersion
+    }
+
+    private fun isDetailRequestValid(
+        profileId: String,
+        hash: String,
+        requestVersion: Long,
+    ): Boolean {
+        val normalizedHash = hash.trim()
+        return normalizedHash.isNotBlank() &&
+            isActiveProfileRequestValid(profileId, requestVersion) &&
+            _uiState.value.detailHash == normalizedHash
     }
 
     private fun connectInternal(
@@ -359,13 +920,31 @@ class MainViewModel(
 
             repository.connect(settings)
                 .onSuccess {
-                    _uiState.update { it.copy(isConnecting = false, connected = true) }
+                    _uiState.update {
+                        it.copy(
+                            isConnecting = false,
+                            connected = true,
+                            activeCapabilities = repository.activeCapabilities(),
+                        )
+                    }
                     refreshServerVersion()
                     refresh()
                     loadGlobalSelectionOptions()
                     startAutoRefresh()
                     startHourlyBoundaryRefresh()
-                    startCountryPeerTracker()
+                    if (repository.activeCapabilities().supportsCountryDistribution) {
+                        startCountryPeerTracker()
+                    } else {
+                        countryPeerTrackerJob?.cancel()
+                        _uiState.update {
+                            if (it.dailyCountryUploadStats.isEmpty()) it
+                            else it.copy(
+                                dailyCountryUploadDate = "",
+                                dailyCountryUploadStats = emptyList(),
+                            )
+                        }
+                    }
+                    refreshDashboardServerSnapshotsAsync()
                 }
                 .onFailure { error ->
                     _uiState.update {
@@ -386,14 +965,85 @@ class MainViewModel(
         }
     }
 
+    private fun stopBackgroundJobs() {
+        autoRefreshJob?.cancel()
+        hourlyBoundaryRefreshJob?.cancel()
+        countryPeerTrackerJob?.cancel()
+        dashboardAggregationJob?.cancel()
+        serverSchedulerJob?.cancel()
+        autoRefreshJob = null
+        hourlyBoundaryRefreshJob = null
+        countryPeerTrackerJob = null
+        dashboardAggregationJob = null
+        serverSchedulerJob = null
+    }
+
+    private fun buildProfileSettingsDraft(
+        baseSettings: ConnectionSettings = _uiState.value.settings,
+        backendType: ServerBackendType,
+        host: String,
+        port: String,
+        useHttps: Boolean,
+        username: String,
+        password: String,
+        refreshSeconds: String,
+    ): ConnectionSettings {
+        val normalizedHost = host.trim()
+        val parsed = parseHostInputHints(normalizedHost)
+        val defaultPort = when (backendType) {
+            ServerBackendType.QBITTORRENT -> 8080
+            ServerBackendType.TRANSMISSION -> 9091
+        }
+        val resolvedPort = parsed?.port ?: (port.toIntOrNull() ?: defaultPort)
+        val resolvedUseHttps = parsed?.useHttps ?: useHttps
+        val nextSettings = baseSettings.copy(
+            host = normalizedHost,
+            port = resolvedPort.coerceIn(1, 65535),
+            useHttps = resolvedUseHttps,
+            username = username.trim(),
+            password = password,
+            serverBackendType = backendType,
+            refreshSeconds = (refreshSeconds.toIntOrNull() ?: 5).coerceIn(5, 120),
+        )
+        require(nextSettings.host.isNotBlank()) { "主机不能为空" }
+        require(nextSettings.username.isNotBlank()) { "用户名不能为空" }
+        return nextSettings
+    }
+
+    private fun resetUiForServerSwitch(
+        settings: ConnectionSettings,
+        activeProfileId: String?,
+    ) {
+        _uiState.update {
+            it.copy(
+                settings = settings,
+                activeServerProfileId = activeProfileId,
+                activeCapabilities = repository.capabilitiesFor(settings),
+                connected = false,
+                serverVersion = "-",
+                transferInfo = TransferInfo(),
+                torrents = emptyList(),
+                dailyTagUploadDate = "",
+                dailyTagUploadStats = emptyList(),
+                dailyCountryUploadDate = "",
+                dailyCountryUploadStats = emptyList(),
+                selectedDashboardProfileId = activeProfileId ?: it.selectedDashboardProfileId,
+                dashboardCacheHydrated = false,
+                hasDashboardSnapshot = false,
+                detailHash = "",
+                detailLoading = false,
+                detailProperties = null,
+                detailFiles = emptyList(),
+                detailTrackers = emptyList(),
+                pendingActionKeys = emptySet(),
+            )
+        }
+    }
+
     fun refresh(manual: Boolean = false) {
         if (isRefreshInProgress) return
         isRefreshInProgress = true
         viewModelScope.launch {
-            val refreshScene = _uiState.value.refreshScene
-            val detailHash = _uiState.value.detailHash
-            val shouldRefreshDetail = refreshScene == RefreshScene.TORRENT_DETAIL && detailHash.isNotBlank()
-
             try {
                 if (manual) {
                     _uiState.update {
@@ -404,36 +1054,24 @@ class MainViewModel(
                     }
                 }
 
-                val dashboardResult = repository.fetchDashboard()
-                val dashboardData = dashboardResult.getOrNull()
-                if (dashboardData != null) {
-                    val (date, dailyStats) = buildDailyTagUploadStats(dashboardData.torrents)
-                    _uiState.update {
-                        it.copy(
-                            transferInfo = dashboardData.transferInfo,
-                            torrents = dashboardData.torrents,
-                            dailyTagUploadDate = date,
-                            dailyTagUploadStats = dailyStats,
-                            dashboardCacheHydrated = true,
-                            hasDashboardSnapshot = true,
+                val state = _uiState.value
+                val refreshAllServers = state.refreshScene == RefreshScene.DASHBOARD &&
+                    state.serverProfiles.size > 1
+
+                if (refreshAllServers) {
+                    state.serverProfiles.forEach { profile ->
+                        refreshServerSnapshotNow(
+                            profileId = profile.id,
+                            showSelectedError = manual && profile.id == state.activeServerProfileId,
                         )
                     }
-                    saveDashboardCache()
-                    refreshCountryUploadStatsAsync(dashboardData.torrents)
-                    if (shouldRefreshDetail) {
-                        refreshDetailSnapshot(detailHash)
-                    }
                 } else {
-                    val error = dashboardResult.exceptionOrNull()
-                    _uiState.update {
-                        val message = error?.message
-                        if (shouldSuppressRefreshError(message)) {
-                            it
-                        } else {
-                            it.copy(
-                                errorMessage = message ?: "Refresh failed."
-                            )
-                        }
+                    val activeProfileId = state.activeServerProfileId
+                    if (!activeProfileId.isNullOrBlank()) {
+                        refreshServerSnapshotNow(
+                            profileId = activeProfileId,
+                            showSelectedError = manual,
+                        )
                     }
                 }
             } finally {
@@ -451,98 +1089,237 @@ class MainViewModel(
         }
     }
 
-    fun pauseTorrent(hash: String) = runTorrentAction(hash) {
-        repository.pauseTorrent(hash).getOrThrow()
+    fun pauseTorrent(hash: String) = runTorrentAction(hash) { profileId ->
+        repository.pauseTorrent(profileId, hash).getOrThrow()
     }
 
-    fun resumeTorrent(hash: String) = runTorrentAction(hash) {
-        repository.resumeTorrent(hash).getOrThrow()
+    fun resumeTorrent(hash: String) = runTorrentAction(hash) { profileId ->
+        repository.resumeTorrent(profileId, hash).getOrThrow()
     }
 
-    fun deleteTorrent(hash: String, deleteFiles: Boolean) = runTorrentAction(hash) {
-        repository.deleteTorrent(hash, deleteFiles).getOrThrow()
+    fun deleteTorrent(hash: String, deleteFiles: Boolean) = runTorrentAction(hash) { profileId ->
+        repository.deleteTorrent(profileId, hash, deleteFiles).getOrThrow()
+    }
+
+    fun reannounceTorrent(hash: String) = runDetailAction(hash) { profileId ->
+        repository.reannounceTorrent(profileId, hash).getOrThrow()
+    }
+
+    fun recheckTorrent(hash: String) = runDetailAction(hash) { profileId ->
+        repository.recheckTorrent(profileId, hash).getOrThrow()
     }
 
     fun loadTorrentDetail(hash: String) {
-        if (hash.isBlank()) return
+        val profileId = _uiState.value.activeServerProfileId?.trim().orEmpty()
+        val normalizedHash = hash.trim()
+        if (profileId.isBlank() || normalizedHash.isBlank()) return
+        val requestVersion = currentActiveProfileRequestVersion()
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
-                    detailHash = hash,
+                    detailHash = normalizedHash,
                     detailLoading = true,
                     errorMessage = null,
                 )
             }
-            repository.fetchTorrentDetail(hash)
+            repository.fetchTorrentDetail(profileId, normalizedHash)
                 .onSuccess { detail ->
-                    val trackers = repository.fetchTorrentTrackers(hash).getOrElse { emptyList() }
-                    val categoryOptions = repository.fetchCategoryOptions().getOrElse { emptyList() }
-                    val tagOptions = repository.fetchTagOptions().getOrElse { emptyList() }
-                    _uiState.update {
-                        it.copy(
-                            detailLoading = false,
-                            detailProperties = detail.properties,
-                            detailFiles = detail.files,
-                            detailTrackers = trackers,
-                            categoryOptions = categoryOptions,
-                            tagOptions = tagOptions,
-                        )
+                    val trackers = repository.fetchTorrentTrackers(profileId, normalizedHash)
+                        .getOrElse { emptyList() }
+                    val categoryOptions = repository.fetchCategoryOptions(profileId)
+                        .getOrElse { emptyList() }
+                    val tagOptions = repository.fetchTagOptions(profileId)
+                        .getOrElse { emptyList() }
+                    _uiState.update { current ->
+                        if (!isDetailRequestValid(profileId, normalizedHash, requestVersion)) {
+                            current
+                        } else {
+                            current.copy(
+                                detailLoading = false,
+                                detailProperties = detail.properties,
+                                detailFiles = detail.files,
+                                detailTrackers = trackers,
+                                categoryOptions = categoryOptions,
+                                tagOptions = tagOptions,
+                            )
+                        }
                     }
                 }
                 .onFailure { error ->
-                    _uiState.update {
-                        it.copy(
-                            detailLoading = false,
-                            detailProperties = null,
-                            detailFiles = emptyList(),
-                            detailTrackers = emptyList(),
-                            errorMessage = error.message ?: "加载种子详情失败",
-                        )
+                    _uiState.update { current ->
+                        if (!isDetailRequestValid(profileId, normalizedHash, requestVersion)) {
+                            current
+                        } else {
+                            current.copy(
+                                detailLoading = false,
+                                detailProperties = null,
+                                detailFiles = emptyList(),
+                                detailTrackers = emptyList(),
+                                errorMessage = error.message ?: "加载种子详情失败",
+                            )
+                        }
                     }
                 }
         }
     }
-    fun renameTorrent(hash: String, newName: String) = runDetailAction(hash) {
-        repository.renameTorrent(hash, newName).getOrThrow()
+
+    fun renameTorrent(hash: String, newName: String) = runDetailAction(hash) { profileId ->
+        repository.renameTorrent(profileId, hash, newName).getOrThrow()
     }
 
-    fun setTorrentLocation(hash: String, location: String) = runDetailAction(hash) {
-        repository.setTorrentLocation(hash, location).getOrThrow()
+    fun setTorrentLocation(hash: String, location: String) = runDetailAction(hash) { profileId ->
+        repository.setTorrentLocation(profileId, hash, location).getOrThrow()
     }
 
-    fun setTorrentCategory(hash: String, category: String) = runDetailAction(hash) {
-        repository.setTorrentCategory(hash, category).getOrThrow()
+    fun setTorrentCategory(hash: String, category: String) = runDetailAction(hash) { profileId ->
+        repository.setTorrentCategory(profileId, hash, category).getOrThrow()
     }
 
-    fun setTorrentTags(hash: String, oldTags: String, newTags: String) = runDetailAction(hash) {
-        repository.setTorrentTags(hash, oldTags, newTags).getOrThrow()
+    fun setTorrentTags(hash: String, oldTags: String, newTags: String) = runDetailAction(hash) { profileId ->
+        repository.setTorrentTags(profileId, hash, oldTags, newTags).getOrThrow()
     }
 
-    fun setTorrentSpeedLimit(hash: String, downloadLimitKb: String, uploadLimitKb: String) = runDetailAction(hash) {
+    fun setTorrentSpeedLimit(hash: String, downloadLimitKb: String, uploadLimitKb: String) = runDetailAction(hash) { profileId ->
         val dl = parseLimitKbToBytes(downloadLimitKb)
         val up = parseLimitKbToBytes(uploadLimitKb)
-        repository.setTorrentSpeedLimit(hash, dl, up).getOrThrow()
+        repository.setTorrentSpeedLimit(profileId, hash, dl, up).getOrThrow()
     }
 
-    fun setTorrentShareRatio(hash: String, ratio: String) = runDetailAction(hash) {
+    fun setTorrentShareRatio(hash: String, ratio: String) = runDetailAction(hash) { profileId ->
         val value = ratio.trim().toDoubleOrNull() ?: throw IllegalArgumentException("分享比率格式无效")
-        repository.setTorrentShareRatio(hash, value).getOrThrow()
+        repository.setTorrentShareRatio(profileId, hash, value).getOrThrow()
+    }
+
+    fun addTracker(hash: String, trackerUrl: String) = runDetailAction(hash) { profileId ->
+        repository.addTracker(profileId, hash, trackerUrl.trim()).getOrThrow()
+    }
+
+    fun editTracker(
+        hash: String,
+        tracker: TorrentTracker,
+        newUrl: String,
+    ) = runDetailAction(hash) { profileId ->
+        repository.editTracker(
+            profileId = profileId,
+            hash = hash,
+            tracker = tracker,
+            newUrl = newUrl.trim(),
+        ).getOrThrow()
+    }
+
+    fun removeTracker(
+        hash: String,
+        tracker: TorrentTracker,
+    ) = runDetailAction(hash) { profileId ->
+        repository.removeTracker(
+            profileId = profileId,
+            hash = hash,
+            tracker = tracker,
+        ).getOrThrow()
     }
 
     fun dismissError() {
         _uiState.update { it.copy(errorMessage = null) }
     }
 
-    fun loadGlobalSelectionOptions() {
-        if (!_uiState.value.connected) return
+    fun dismissPendingBackendRepair() {
+        _uiState.update { current ->
+            current.copy(pendingBackendRepair = null)
+        }
+    }
+
+    fun confirmPendingBackendRepair() {
+        val pending = _uiState.value.pendingBackendRepair ?: return
         viewModelScope.launch {
-            val categoryOptions = repository.fetchCategoryOptions().getOrElse { emptyList() }
-            val tagOptions = repository.fetchTagOptions().getOrElse { emptyList() }
-            _uiState.update {
-                it.copy(
-                    categoryOptions = categoryOptions,
-                    tagOptions = tagOptions,
+            runCatching {
+                val profile = _uiState.value.serverProfiles.firstOrNull { it.id == pending.profileId }
+                    ?: error("服务器配置不存在")
+                val existingSettings = connectionStore.loadSettingsForProfile(pending.profileId)
+                    ?: error("服务器配置不存在")
+                val updatedSettings = existingSettings.copy(serverBackendType = pending.detectedBackend)
+                connectionStore.updateServerProfile(
+                    profileId = pending.profileId,
+                    name = profile.name,
+                    settings = updatedSettings,
+                    passwordOverride = null,
                 )
+                repository.removeProfile(pending.profileId)
+                nextServerRefreshAt[pending.profileId] = 0L
+                val isActive = _uiState.value.activeServerProfileId == pending.profileId
+                if (isActive) {
+                    val switched = connectionStore.switchToServerProfile(pending.profileId)
+                    repository.selectProfile(pending.profileId)
+                    bumpActiveProfileRequestVersion()
+                    _uiState.update { current ->
+                        current.copy(
+                            settings = switched,
+                            activeServerProfileId = pending.profileId,
+                            selectedDashboardProfileId = pending.profileId,
+                            dashboardSessionToken = current.dashboardSessionToken + 1L,
+                            activeCapabilities = repository.capabilitiesFor(switched),
+                            isConnecting = true,
+                            connected = false,
+                            pendingBackendRepair = null,
+                            errorMessage = null,
+                            serverVersion = "-",
+                            transferInfo = TransferInfo(),
+                            torrents = emptyList(),
+                            dailyTagUploadDate = "",
+                            dailyTagUploadStats = emptyList(),
+                            dailyCountryUploadDate = "",
+                            dailyCountryUploadStats = emptyList(),
+                            categoryOptions = emptyList(),
+                            tagOptions = emptyList(),
+                            detailHash = "",
+                            detailLoading = false,
+                            detailProperties = null,
+                            detailFiles = emptyList(),
+                            detailTrackers = emptyList(),
+                            pendingActionKeys = emptySet(),
+                        )
+                    }
+                    hydrateDashboardCacheForCurrentScope(force = true)
+                } else {
+                    _uiState.update { current ->
+                        current.copy(
+                            pendingBackendRepair = null,
+                            errorMessage = null,
+                        )
+                    }
+                }
+                hydrateDashboardServerSnapshots()
+                synchronizeServerScheduler()
+                refreshServerSnapshotNow(
+                    profileId = pending.profileId,
+                    showSelectedError = true,
+                )
+            }.onFailure { error ->
+                _uiState.update { current ->
+                    current.copy(
+                        pendingBackendRepair = null,
+                        errorMessage = userFacingConnectionMessage(error),
+                    )
+                }
+            }
+        }
+    }
+
+    fun loadGlobalSelectionOptions() {
+        val profileId = _uiState.value.activeServerProfileId?.trim().orEmpty()
+        if (!_uiState.value.connected || profileId.isBlank()) return
+        val requestVersion = currentActiveProfileRequestVersion()
+        viewModelScope.launch {
+            val categoryOptions = repository.fetchCategoryOptions(profileId).getOrElse { emptyList() }
+            val tagOptions = repository.fetchTagOptions(profileId).getOrElse { emptyList() }
+            _uiState.update { current ->
+                if (!isActiveProfileRequestValid(profileId, requestVersion)) {
+                    current
+                } else {
+                    current.copy(
+                        categoryOptions = categoryOptions,
+                        tagOptions = tagOptions,
+                    )
+                }
             }
         }
     }
@@ -562,9 +1339,15 @@ class MainViewModel(
         downloadLimitKb: String,
     ) {
         if (!_uiState.value.connected) {
-            _uiState.update { it.copy(errorMessage = "请先连接 qBittorrent 服务器。") }
+            _uiState.update { it.copy(errorMessage = "请先连接服务器。") }
             return
         }
+        val profileId = _uiState.value.activeServerProfileId?.trim().orEmpty()
+        if (profileId.isBlank()) {
+            _uiState.update { it.copy(errorMessage = "请先选择服务器。") }
+            return
+        }
+        val requestVersion = currentActiveProfileRequestVersion()
         viewModelScope.launch {
             _uiState.update { it.copy(errorMessage = null) }
             runCatching {
@@ -582,61 +1365,101 @@ class MainViewModel(
                     uploadLimitBytes = parseLimitKbToBytes(uploadLimitKb),
                     downloadLimitBytes = parseLimitKbToBytes(downloadLimitKb),
                 )
-                repository.addTorrent(request).getOrThrow()
+                repository.addTorrent(profileId, request).getOrThrow()
             }.onSuccess {
-                loadGlobalSelectionOptions()
-                refresh()
+                if (isActiveProfileRequestValid(profileId, requestVersion)) {
+                    loadGlobalSelectionOptions()
+                    refresh()
+                } else {
+                    nextServerRefreshAt[profileId] = 0L
+                }
             }.onFailure { error ->
-                _uiState.update { it.copy(errorMessage = error.message ?: "添加种子失败。") }
+                if (isActiveProfileRequestValid(profileId, requestVersion)) {
+                    _uiState.update { it.copy(errorMessage = error.message ?: "添加种子失败。") }
+                }
             }
         }
     }
 
-    private fun runTorrentAction(hash: String, action: suspend () -> Unit) {
-        if (hash.isBlank()) return
-        if (_uiState.value.pendingHashes.contains(hash)) return
+    private fun runTorrentAction(
+        hash: String,
+        action: suspend (String) -> Unit,
+    ) {
+        val profileId = _uiState.value.activeServerProfileId?.trim().orEmpty()
+        val normalizedHash = hash.trim()
+        if (profileId.isBlank() || normalizedHash.isBlank()) return
+        val pendingActionKey = buildPendingActionKey(profileId, normalizedHash)
+        if (_uiState.value.pendingActionKeys.contains(pendingActionKey)) return
+        val requestVersion = currentActiveProfileRequestVersion()
 
         viewModelScope.launch {
-            _uiState.update { it.copy(pendingHashes = it.pendingHashes + hash, errorMessage = null) }
-            runCatching { action() }
-                .onSuccess { refresh() }
-                .onFailure { error ->
-                    _uiState.update {
-                        it.copy(errorMessage = error.message ?: "Action failed.")
+            _uiState.update {
+                it.copy(pendingActionKeys = it.pendingActionKeys + pendingActionKey, errorMessage = null)
+            }
+            runCatching { action(profileId) }
+                .onSuccess {
+                    if (isActiveProfileRequestValid(profileId, requestVersion)) {
+                        refresh()
+                    } else {
+                        nextServerRefreshAt[profileId] = 0L
                     }
                 }
-            _uiState.update { it.copy(pendingHashes = it.pendingHashes - hash) }
-        }
-    }
-
-    private fun runDetailAction(hash: String, action: suspend () -> Unit) {
-        runTorrentAction(hash) {
-            action()
-            val detail = repository.fetchTorrentDetail(hash).getOrThrow()
-            val trackers = repository.fetchTorrentTrackers(hash).getOrElse { emptyList() }
-            val categoryOptions = repository.fetchCategoryOptions().getOrElse { emptyList() }
-            val tagOptions = repository.fetchTagOptions().getOrElse { emptyList() }
+                .onFailure { error ->
+                    if (isActiveProfileRequestValid(profileId, requestVersion)) {
+                        _uiState.update {
+                            it.copy(errorMessage = error.message ?: "Action failed.")
+                        }
+                    }
+                }
             _uiState.update {
-                it.copy(
-                    detailHash = hash,
-                    detailProperties = detail.properties,
-                    detailFiles = detail.files,
-                    detailTrackers = trackers,
-                    categoryOptions = categoryOptions,
-                    tagOptions = tagOptions,
-                )
+                it.copy(pendingActionKeys = it.pendingActionKeys - pendingActionKey)
             }
         }
     }
 
-    private suspend fun refreshDetailSnapshot(hash: String) {
-        val detail = repository.fetchTorrentDetail(hash).getOrNull() ?: return
-        val trackers = repository.fetchTorrentTrackers(hash).getOrElse { emptyList() }
-        _uiState.update {
-            if (it.detailHash != hash) {
-                it
+    private fun runDetailAction(
+        hash: String,
+        action: suspend (String) -> Unit,
+    ) {
+        val normalizedHash = hash.trim()
+        if (normalizedHash.isBlank()) return
+        val requestVersion = currentActiveProfileRequestVersion()
+        runTorrentAction(normalizedHash) { profileId ->
+            action(profileId)
+            val detail = repository.fetchTorrentDetail(profileId, normalizedHash).getOrThrow()
+            val trackers = repository.fetchTorrentTrackers(profileId, normalizedHash).getOrElse { emptyList() }
+            val categoryOptions = repository.fetchCategoryOptions(profileId).getOrElse { emptyList() }
+            val tagOptions = repository.fetchTagOptions(profileId).getOrElse { emptyList() }
+            _uiState.update { current ->
+                if (!isDetailRequestValid(profileId, normalizedHash, requestVersion)) {
+                    current
+                } else {
+                    current.copy(
+                        detailHash = normalizedHash,
+                        detailLoading = false,
+                        detailProperties = detail.properties,
+                        detailFiles = detail.files,
+                        detailTrackers = trackers,
+                        categoryOptions = categoryOptions,
+                        tagOptions = tagOptions,
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun refreshDetailSnapshot(
+        profileId: String,
+        hash: String,
+        requestVersion: Long,
+    ) {
+        val detail = repository.fetchTorrentDetail(profileId, hash).getOrNull() ?: return
+        val trackers = repository.fetchTorrentTrackers(profileId, hash).getOrElse { emptyList() }
+        _uiState.update { current ->
+            if (!isDetailRequestValid(profileId, hash, requestVersion)) {
+                current
             } else {
-                it.copy(
+                current.copy(
                     detailProperties = detail.properties,
                     detailFiles = detail.files,
                     detailTrackers = trackers,
@@ -650,6 +1473,7 @@ class MainViewModel(
             repository.fetchServerVersion()
                 .onSuccess { version ->
                     _uiState.update { it.copy(serverVersion = version.ifBlank { "-" }) }
+                    saveActiveDashboardServerSnapshot()
                 }
         }
     }
@@ -668,6 +1492,8 @@ class MainViewModel(
                 )
             }
             saveDashboardCache()
+            saveActiveDashboardServerSnapshot()
+            refreshDashboardServerSnapshotsAsync(skipActive = true)
         }
     }
 
@@ -695,6 +1521,830 @@ class MainViewModel(
         }
     }
 
+    private fun hydrateDashboardServerSnapshots() {
+        dashboardAggregationJob?.cancel()
+        dashboardAggregationJob = viewModelScope.launch {
+            val ordered = orderedDashboardServerSnapshots(
+                profiles = _uiState.value.serverProfiles,
+                snapshotsById = connectionStore.loadDashboardServerSnapshots(),
+            )
+            val aggregate = buildDashboardAggregateWithHistory(
+                snapshots = ordered,
+                sampleFreshData = false,
+            )
+            _uiState.update { current ->
+                val selectedProfileId = current.activeServerProfileId
+                    ?.takeIf { active -> ordered.any { it.profileId == active } }
+                    ?: current.selectedDashboardProfileId
+                        ?.takeIf { selected -> ordered.any { it.profileId == selected } }
+                    ?: ordered.firstOrNull()?.profileId
+                current.copy(
+                    dashboardServerSnapshots = ordered,
+                    selectedDashboardProfileId = selectedProfileId,
+                    dashboardAggregate = aggregate,
+                    aggregateOnlineServerCount = ordered.count { !it.isStale },
+                )
+            }
+            syncSelectedUiFromStoredSnapshot()
+            markInitialDashboardSnapshotsHydrated()
+        }
+    }
+
+    private fun synchronizeServerScheduler() {
+        val profiles = _uiState.value.serverProfiles
+        if (profiles.isEmpty()) {
+            serverSchedulerJob?.cancel()
+            serverSchedulerJob = null
+            nextServerRefreshAt.clear()
+            repository.clearAllSessions()
+            return
+        }
+
+        val activeIds = profiles.map { it.id }.toSet()
+        nextServerRefreshAt.keys.retainAll(activeIds)
+        profiles.forEach { profile ->
+            nextServerRefreshAt.putIfAbsent(profile.id, 0L)
+        }
+        repository.selectProfile(_uiState.value.activeServerProfileId)
+
+        if (serverSchedulerJob?.isActive == true) return
+        serverSchedulerJob = viewModelScope.launch {
+            while (isActive) {
+                val currentProfiles = _uiState.value.serverProfiles
+                if (currentProfiles.isEmpty()) break
+                val now = System.currentTimeMillis()
+                currentProfiles.forEach { profile ->
+                    val dueAt = nextServerRefreshAt[profile.id] ?: 0L
+                    if (now >= dueAt) {
+                        refreshServerSnapshotNow(
+                            profileId = profile.id,
+                            showSelectedError = false,
+                        )
+                    }
+                }
+                delay(1_000L)
+            }
+        }
+    }
+
+    private suspend fun refreshServerSnapshotNow(
+        profileId: String,
+        showSelectedError: Boolean,
+        forceSettings: ConnectionSettings? = null,
+    ) {
+        if (profileId.isBlank()) return
+        serverRefreshMutex.withLock {
+            val state = _uiState.value
+            val profile = state.serverProfiles.firstOrNull { it.id == profileId }
+            val settings = forceSettings ?: connectionStore.loadSettingsForProfile(profileId) ?: return
+            val isSelectedProfile = state.activeServerProfileId == profileId
+            val selectedRequestVersion = currentActiveProfileRequestVersion()
+            if (isSelectedProfile) {
+                _uiState.update { current ->
+                    current.copy(
+                        isConnecting = true,
+                        errorMessage = if (showSelectedError) null else current.errorMessage,
+                    )
+                }
+            }
+
+            val result = runCatching {
+                repository.connect(profileId, settings).getOrThrow()
+                val serverVersion = repository.fetchServerVersion(profileId).getOrElse { "-" }
+                val dashboardData = repository.fetchDashboard(profileId).getOrThrow()
+                val (tagDate, tagStats) = buildDashboardTagUploadStatsForScope(
+                    scopeKey = "profile:$profileId",
+                    torrents = dashboardData.torrents,
+                )
+                val countryStats = if (repository.capabilitiesFor(settings).supportsCountryDistribution) {
+                    buildDashboardCountryUploadStatsForScope(
+                        scopeKey = "profile:$profileId",
+                        torrents = dashboardData.torrents,
+                        fetchPeerSnapshots = { hashes ->
+                            repository.fetchCountryPeerSnapshots(profileId, hashes)
+                                .getOrElse { emptyList() }
+                        },
+                    )
+                } else {
+                    DailyCountryUploadStats(
+                        dateLabel = tagDate,
+                        countries = emptyList(),
+                    )
+                }
+                CachedDashboardServerSnapshot(
+                    profileId = profileId,
+                    profileName = profile?.name ?: settings.host,
+                    backendType = profile?.backendType ?: settings.serverBackendType,
+                    host = profile?.host ?: settings.host,
+                    port = profile?.port ?: settings.port,
+                    useHttps = profile?.useHttps ?: settings.useHttps,
+                    serverVersion = serverVersion.ifBlank { "-" },
+                    transferInfo = dashboardData.transferInfo,
+                    torrents = dashboardData.torrents,
+                    dailyTagUploadDate = tagDate,
+                    dailyTagUploadStats = tagStats.map { stat ->
+                        CachedDailyTagUploadStat(
+                            tag = stat.tag,
+                            uploadedBytes = stat.uploadedBytes,
+                            torrentCount = stat.torrentCount,
+                            isNoTag = stat.isNoTag,
+                        )
+                    },
+                    dailyCountryUploadDate = countryStats.dateLabel,
+                    dailyCountryUploadStats = countryStats.countries,
+                    lastUpdatedAt = System.currentTimeMillis(),
+                    errorMessage = "",
+                    isStale = false,
+                )
+            }
+
+            result.onSuccess { snapshot ->
+                connectionStore.saveDashboardServerSnapshot(snapshot)
+                mergeDashboardSnapshot(snapshot, sampleFreshData = true)
+                nextServerRefreshAt[profileId] = System.currentTimeMillis() + nextRefreshIntervalMs(settings)
+
+                if (isSelectedProfile) {
+                    repository.selectProfile(profileId)
+                    if (isActiveProfileRequestValid(profileId, selectedRequestVersion)) {
+                        syncSelectedUiFromSnapshot(
+                            profileId = profileId,
+                            settings = settings,
+                            snapshot = snapshot,
+                            connected = true,
+                            selectedErrorMessage = null,
+                            requestVersion = selectedRequestVersion,
+                        )
+                    }
+                }
+            }.onFailure { error ->
+                Log.w("QBRemote", "refreshServerSnapshotNow failed for profile=$profileId", error)
+                val summaryMessage = userFacingConnectionMessage(error)
+                val currentSnapshot = _uiState.value.dashboardServerSnapshots
+                    .firstOrNull { it.profileId == profileId }
+                    ?: connectionStore.loadDashboardServerSnapshots()[profileId]
+                val staleSnapshot = (currentSnapshot ?: CachedDashboardServerSnapshot(
+                    profileId = profileId,
+                    profileName = profile?.name ?: settings.host,
+                    backendType = profile?.backendType ?: settings.serverBackendType,
+                    host = profile?.host ?: settings.host,
+                    port = profile?.port ?: settings.port,
+                    useHttps = profile?.useHttps ?: settings.useHttps,
+                )).copy(
+                    profileName = profile?.name ?: currentSnapshot?.profileName ?: settings.host,
+                    backendType = profile?.backendType ?: currentSnapshot?.backendType ?: settings.serverBackendType,
+                    host = profile?.host ?: currentSnapshot?.host ?: settings.host,
+                    port = profile?.port ?: currentSnapshot?.port ?: settings.port,
+                    useHttps = profile?.useHttps ?: currentSnapshot?.useHttps ?: settings.useHttps,
+                    errorMessage = summaryMessage,
+                    isStale = true,
+                )
+                connectionStore.saveDashboardServerSnapshot(staleSnapshot)
+                mergeDashboardSnapshot(staleSnapshot, sampleFreshData = false)
+                nextServerRefreshAt[profileId] = System.currentTimeMillis() + nextRefreshIntervalMs(settings)
+
+                if (isSelectedProfile && error is BackendConnectionError.WrongBackend) {
+                    maybeQueueBackendRepair(
+                        profileId = profileId,
+                        profileName = profile?.name ?: staleSnapshot.profileName,
+                        error = error,
+                    )
+                }
+
+                if (isSelectedProfile) {
+                    repository.selectProfile(profileId)
+                    if (isActiveProfileRequestValid(profileId, selectedRequestVersion)) {
+                        syncSelectedUiFromSnapshot(
+                            profileId = profileId,
+                            settings = settings,
+                            snapshot = staleSnapshot,
+                            connected = false,
+                            selectedErrorMessage = if (error is BackendConnectionError.WrongBackend) {
+                                null
+                            } else if (showSelectedError && !shouldSuppressRefreshError(summaryMessage)) {
+                                summaryMessage
+                            } else {
+                                null
+                            },
+                            requestVersion = selectedRequestVersion,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun syncSelectedUiFromStoredSnapshot() {
+        val profileId = _uiState.value.activeServerProfileId ?: return
+        val settings = connectionStore.loadSettingsForProfile(profileId) ?: return
+        val snapshot = _uiState.value.dashboardServerSnapshots.firstOrNull { it.profileId == profileId }
+            ?: connectionStore.loadDashboardServerSnapshots()[profileId]
+        repository.selectProfile(profileId)
+        val requestVersion = currentActiveProfileRequestVersion()
+        syncSelectedUiFromSnapshot(
+            profileId = profileId,
+            settings = settings,
+            snapshot = snapshot,
+            connected = repository.isConnected(profileId) && snapshot?.isStale == false,
+            selectedErrorMessage = null,
+            requestVersion = requestVersion,
+        )
+    }
+
+    private suspend fun syncSelectedUiFromSnapshot(
+        profileId: String,
+        settings: ConnectionSettings,
+        snapshot: CachedDashboardServerSnapshot?,
+        connected: Boolean,
+        selectedErrorMessage: String?,
+        requestVersion: Long,
+    ) {
+        if (!isActiveProfileRequestValid(profileId, requestVersion)) return
+
+        val categoryOptions = if (connected) {
+            repository.fetchCategoryOptions(profileId).getOrElse { emptyList() }
+        } else {
+            emptyList()
+        }
+        val tagOptions = if (connected) {
+            repository.fetchTagOptions(profileId).getOrElse { emptyList() }
+        } else {
+            emptyList()
+        }
+
+        _uiState.update { current ->
+            if (!isActiveProfileRequestValid(profileId, requestVersion)) {
+                current
+            } else {
+                current.copy(
+                    settings = settings,
+                    activeCapabilities = repository.capabilitiesFor(settings),
+                    isConnecting = false,
+                    connected = connected,
+                    serverVersion = snapshot?.serverVersion?.ifBlank { "-" } ?: "-",
+                    transferInfo = snapshot?.transferInfo ?: TransferInfo(),
+                    torrents = snapshot?.torrents ?: emptyList(),
+                    dailyTagUploadDate = snapshot?.dailyTagUploadDate.orEmpty(),
+                    dailyTagUploadStats = snapshot?.dailyTagUploadStats?.map { stat ->
+                        DailyTagUploadStat(
+                            tag = stat.tag,
+                            uploadedBytes = stat.uploadedBytes,
+                            torrentCount = stat.torrentCount,
+                            isNoTag = stat.isNoTag,
+                        )
+                    }.orEmpty(),
+                    dailyCountryUploadDate = snapshot?.dailyCountryUploadDate.orEmpty(),
+                    dailyCountryUploadStats = snapshot?.dailyCountryUploadStats.orEmpty(),
+                    categoryOptions = categoryOptions,
+                    tagOptions = tagOptions,
+                    dashboardCacheHydrated = true,
+                    hasDashboardSnapshot = snapshot != null,
+                    pendingBackendRepair = current.pendingBackendRepair
+                        ?.takeUnless { connected && it.profileId == profileId },
+                    errorMessage = selectedErrorMessage,
+                )
+            }
+        }
+
+        if (snapshot != null && isActiveProfileRequestValid(profileId, requestVersion)) {
+            saveDashboardCache()
+        }
+
+        val detailHash = _uiState.value.detailHash
+        if (connected && _uiState.value.refreshScene == RefreshScene.TORRENT_DETAIL && detailHash.isNotBlank()) {
+            refreshDetailSnapshot(profileId, detailHash, requestVersion)
+        }
+    }
+
+    private suspend fun mergeDashboardSnapshot(
+        snapshot: CachedDashboardServerSnapshot,
+        sampleFreshData: Boolean,
+    ) {
+        val current = _uiState.value
+        val snapshotsById = current.dashboardServerSnapshots
+            .associateBy { it.profileId }
+            .toMutableMap()
+        snapshotsById[snapshot.profileId] = snapshot
+        val ordered = orderedDashboardServerSnapshots(current.serverProfiles, snapshotsById)
+        val aggregate = buildDashboardAggregateWithHistory(
+            snapshots = ordered,
+            sampleFreshData = sampleFreshData,
+        )
+        _uiState.update { latest ->
+            val selectedProfileId = latest.activeServerProfileId
+                ?.takeIf { active -> ordered.any { it.profileId == active } }
+                ?: latest.selectedDashboardProfileId
+                    ?.takeIf { selected -> ordered.any { it.profileId == selected } }
+                ?: ordered.firstOrNull()?.profileId
+            latest.copy(
+                dashboardServerSnapshots = ordered,
+                selectedDashboardProfileId = selectedProfileId,
+                dashboardAggregate = aggregate,
+                aggregateOnlineServerCount = ordered.count { !it.isStale },
+            )
+        }
+    }
+
+    private fun nextRefreshIntervalMs(settings: ConnectionSettings): Long {
+        return settings.refreshSeconds.coerceIn(5, 120) * 1_000L
+    }
+
+    private fun refreshDashboardServerSnapshotsAsync(skipActive: Boolean = false) {
+        dashboardAggregationJob?.cancel()
+        dashboardAggregationJob = viewModelScope.launch {
+            val profiles = _uiState.value.serverProfiles
+            if (profiles.isEmpty()) {
+                clearHomeRealtimeSpeedSeries()
+                _uiState.update { current ->
+                    current.copy(
+                        dashboardServerSnapshots = emptyList(),
+                        selectedDashboardProfileId = null,
+                        dashboardAggregate = DashboardAggregateState(),
+                        aggregateOnlineServerCount = 0,
+                    )
+                }
+                return@launch
+            }
+
+            val snapshots = connectionStore.loadDashboardServerSnapshots().toMutableMap()
+            val activeProfileId = _uiState.value.activeServerProfileId
+            val activeProfile = profiles.firstOrNull { it.id == activeProfileId }
+
+            if (!skipActive && _uiState.value.connected && activeProfile != null) {
+                val activeSnapshot = buildActiveDashboardServerSnapshot(activeProfile, _uiState.value)
+                snapshots[activeProfile.id] = activeSnapshot
+                connectionStore.saveDashboardServerSnapshot(activeSnapshot)
+            }
+
+            for (profile in profiles) {
+                if (profile.id == activeProfileId && _uiState.value.connected) {
+                    continue
+                }
+                val settings = connectionStore.loadSettingsForProfile(profile.id) ?: continue
+                repository.fetchDashboardSnapshot(settings)
+                    .onSuccess { fetched ->
+                        val tagStats = buildDashboardTagUploadStatsForScope(
+                            scopeKey = "profile:${profile.id}",
+                            torrents = fetched.dashboardData.torrents,
+                        )
+                        val countryStats = if (repository.capabilitiesFor(settings).supportsCountryDistribution) {
+                            buildDashboardCountryUploadStatsForScope(
+                                scopeKey = "profile:${profile.id}",
+                                torrents = fetched.dashboardData.torrents,
+                                fetchPeerSnapshots = { hashes ->
+                                    repository.fetchCountryPeerSnapshots(settings, hashes)
+                                        .getOrElse { emptyList() }
+                                },
+                            )
+                        } else {
+                            com.hjw.qbremote.data.model.DailyCountryUploadStats(
+                                dateLabel = tagStats.first,
+                                countries = emptyList(),
+                            )
+                        }
+                        val snapshot = CachedDashboardServerSnapshot(
+                            profileId = profile.id,
+                            profileName = profile.name,
+                            backendType = profile.backendType,
+                            host = profile.host,
+                            port = profile.port,
+                            useHttps = profile.useHttps,
+                            serverVersion = fetched.serverVersion,
+                            transferInfo = fetched.dashboardData.transferInfo,
+                            torrents = fetched.dashboardData.torrents,
+                            dailyTagUploadDate = tagStats.first,
+                            dailyTagUploadStats = tagStats.second.map { stat ->
+                                CachedDailyTagUploadStat(
+                                    tag = stat.tag,
+                                    uploadedBytes = stat.uploadedBytes,
+                                    torrentCount = stat.torrentCount,
+                                    isNoTag = stat.isNoTag,
+                                )
+                            },
+                            dailyCountryUploadDate = countryStats.dateLabel,
+                            dailyCountryUploadStats = countryStats.countries,
+                            lastUpdatedAt = System.currentTimeMillis(),
+                            errorMessage = "",
+                            isStale = false,
+                        )
+                        snapshots[profile.id] = snapshot
+                        connectionStore.saveDashboardServerSnapshot(snapshot)
+                    }
+                    .onFailure { error ->
+                        val staleSnapshot = (snapshots[profile.id] ?: CachedDashboardServerSnapshot(
+                            profileId = profile.id,
+                            profileName = profile.name,
+                            backendType = profile.backendType,
+                            host = profile.host,
+                            port = profile.port,
+                            useHttps = profile.useHttps,
+                        )).copy(
+                            profileName = profile.name,
+                            backendType = profile.backendType,
+                            host = profile.host,
+                            port = profile.port,
+                            useHttps = profile.useHttps,
+                            errorMessage = error.message ?: "Refresh failed.",
+                            isStale = true,
+                        )
+                        snapshots[profile.id] = staleSnapshot
+                        connectionStore.saveDashboardServerSnapshot(staleSnapshot)
+                    }
+            }
+
+            val ordered = orderedDashboardServerSnapshots(profiles, snapshots)
+            val aggregate = buildDashboardAggregateWithHistory(
+                snapshots = ordered,
+                sampleFreshData = true,
+            )
+            _uiState.update { current ->
+                current.copy(
+                    dashboardServerSnapshots = ordered,
+                    selectedDashboardProfileId = current.selectedDashboardProfileId
+                        ?.takeIf { selected -> ordered.any { it.profileId == selected } }
+                        ?: current.activeServerProfileId
+                        ?: ordered.firstOrNull()?.profileId,
+                    dashboardAggregate = aggregate,
+                    aggregateOnlineServerCount = ordered.count { !it.isStale },
+                )
+            }
+        }
+    }
+
+    private suspend fun saveActiveDashboardServerSnapshot() {
+        val state = _uiState.value
+        val activeProfile = state.serverProfiles.firstOrNull { it.id == state.activeServerProfileId } ?: return
+        val snapshot = buildActiveDashboardServerSnapshot(activeProfile, state)
+        connectionStore.saveDashboardServerSnapshot(snapshot)
+    }
+
+    private fun buildActiveDashboardServerSnapshot(
+        profile: ServerProfile,
+        state: MainUiState,
+    ): CachedDashboardServerSnapshot {
+        return CachedDashboardServerSnapshot(
+            profileId = profile.id,
+            profileName = profile.name,
+            backendType = profile.backendType,
+            host = profile.host,
+            port = profile.port,
+            useHttps = profile.useHttps,
+            serverVersion = state.serverVersion,
+            transferInfo = state.transferInfo,
+            torrents = state.torrents,
+            dailyTagUploadDate = state.dailyTagUploadDate,
+            dailyTagUploadStats = state.dailyTagUploadStats.map { stat ->
+                CachedDailyTagUploadStat(
+                    tag = stat.tag,
+                    uploadedBytes = stat.uploadedBytes,
+                    torrentCount = stat.torrentCount,
+                    isNoTag = stat.isNoTag,
+                )
+            },
+            dailyCountryUploadDate = state.dailyCountryUploadDate,
+            dailyCountryUploadStats = state.dailyCountryUploadStats,
+            lastUpdatedAt = System.currentTimeMillis(),
+            errorMessage = "",
+            isStale = false,
+        )
+    }
+
+    private fun orderedDashboardServerSnapshots(
+        profiles: List<ServerProfile>,
+        snapshotsById: Map<String, CachedDashboardServerSnapshot>,
+    ): List<CachedDashboardServerSnapshot> {
+        return profiles.map { profile ->
+            snapshotsById[profile.id]?.copy(
+                profileName = profile.name,
+                backendType = profile.backendType,
+                host = profile.host,
+                port = profile.port,
+                useHttps = profile.useHttps,
+            ) ?: CachedDashboardServerSnapshot(
+                profileId = profile.id,
+                profileName = profile.name,
+                backendType = profile.backendType,
+                host = profile.host,
+                port = profile.port,
+                useHttps = profile.useHttps,
+                isStale = true,
+            )
+        }
+    }
+
+    private fun buildDashboardAggregate(
+        snapshots: List<CachedDashboardServerSnapshot>,
+    ): DashboardAggregateState {
+        if (snapshots.isEmpty()) return DashboardAggregateState()
+
+        val liveSnapshots = snapshots.filter { !it.isStale }
+        val aggregateSource = liveSnapshots.ifEmpty { snapshots }
+        val totalTransfer = aggregateSource.fold(TransferInfo()) { acc, snapshot ->
+            TransferInfo(
+                downloadSpeed = acc.downloadSpeed + snapshot.transferInfo.downloadSpeed,
+                uploadSpeed = acc.uploadSpeed + snapshot.transferInfo.uploadSpeed,
+                downloadedTotal = acc.downloadedTotal + snapshot.transferInfo.downloadedTotal,
+                uploadedTotal = acc.uploadedTotal + snapshot.transferInfo.uploadedTotal,
+                downloadRateLimit = acc.downloadRateLimit + snapshot.transferInfo.downloadRateLimit,
+                uploadRateLimit = acc.uploadRateLimit + snapshot.transferInfo.uploadRateLimit,
+                freeSpaceOnDisk = acc.freeSpaceOnDisk + snapshot.transferInfo.freeSpaceOnDisk,
+                dhtNodes = acc.dhtNodes + snapshot.transferInfo.dhtNodes,
+            )
+        }
+        val mergedTorrents = aggregateSource.flatMap { it.torrents }
+        val mergedTagStats = aggregateDashboardTagStats(aggregateSource)
+        val mergedCountryStats = aggregateDashboardCountryStats(aggregateSource)
+        val totalServerCount = snapshots.size
+
+        return DashboardAggregateState(
+            transferInfo = totalTransfer,
+            torrents = mergedTorrents,
+            dailyTagUploadDate = mergedTagStats.first,
+            dailyTagUploadStats = mergedTagStats.second,
+            dailyCountryUploadDate = mergedCountryStats.first,
+            dailyCountryUploadStats = mergedCountryStats.second,
+            totalServerCount = totalServerCount,
+            categoryCoverageServerCount = snapshots.count {
+                defaultCapabilitiesFor(it.backendType).supportsCategories
+            },
+            countryCoverageServerCount = snapshots.count {
+                defaultCapabilitiesFor(it.backendType).supportsCountryDistribution
+            },
+        )
+    }
+
+    private suspend fun buildDashboardAggregateWithHistory(
+        snapshots: List<CachedDashboardServerSnapshot>,
+        sampleFreshData: Boolean,
+    ): DashboardAggregateState {
+        if (snapshots.isEmpty()) return DashboardAggregateState()
+        val aggregate = buildDashboardAggregate(snapshots)
+        val liveServerCount = snapshots.count { !it.isStale }
+        val realtimeSpeedSeries = when {
+            liveServerCount <= 0 -> {
+                clearHomeRealtimeSpeedSeries()
+                emptyList()
+            }
+            sampleFreshData -> sampleHomeRealtimeSpeedPoint(
+                transferInfo = aggregate.transferInfo,
+                onlineServerCount = liveServerCount,
+            )
+            else -> homeRealtimeSpeedSeries.toList()
+        }
+        return aggregate.copy(realtimeSpeedSeries = realtimeSpeedSeries)
+    }
+
+    private fun aggregateDashboardTagStats(
+        snapshots: List<CachedDashboardServerSnapshot>,
+    ): Pair<String, List<DailyTagUploadStat>> {
+        val totals = linkedMapOf<String, DailyTagUploadStat>()
+        snapshots.forEach { snapshot ->
+            snapshot.dailyTagUploadStats.forEach { stat ->
+                val key = if (stat.isNoTag) NO_TAG_KEY else stat.tag.trim().lowercase(Locale.US)
+                val existing = totals[key]
+                totals[key] = DailyTagUploadStat(
+                    tag = if (stat.isNoTag) NO_TAG_KEY else stat.tag,
+                    uploadedBytes = (existing?.uploadedBytes ?: 0L) + stat.uploadedBytes,
+                    torrentCount = (existing?.torrentCount ?: 0) + stat.torrentCount,
+                    isNoTag = stat.isNoTag,
+                )
+            }
+        }
+        val date = snapshots.map { it.dailyTagUploadDate.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
+        return date to totals.values
+            .filter { it.uploadedBytes > 0L }
+            .sortedByDescending { it.uploadedBytes }
+    }
+
+    private fun aggregateDashboardCountryStats(
+        snapshots: List<CachedDashboardServerSnapshot>,
+    ): Pair<String, List<CountryUploadRecord>> {
+        val totals = linkedMapOf<String, CountryUploadRecord>()
+        snapshots
+            .filter { defaultCapabilitiesFor(it.backendType).supportsCountryDistribution }
+            .forEach { snapshot ->
+                snapshot.dailyCountryUploadStats.forEach recordLoop@{ record ->
+                    val key = record.countryCode.trim().uppercase(Locale.US)
+                    if (key.isBlank()) return@recordLoop
+                    val existing = totals[key]
+                    totals[key] = CountryUploadRecord(
+                        countryCode = key,
+                        countryName = record.countryName.ifBlank { existing?.countryName.orEmpty() },
+                        uploadedBytes = (existing?.uploadedBytes ?: 0L) + record.uploadedBytes,
+                    )
+                }
+            }
+        val date = snapshots.map { it.dailyCountryUploadDate.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
+        return date to totals.values
+            .filter { it.uploadedBytes > 0L }
+            .sortedByDescending { it.uploadedBytes }
+    }
+
+    private suspend fun buildDashboardTagUploadStatsForScope(
+        scopeKey: String,
+        torrents: List<TorrentInfo>,
+    ): Pair<String, List<DailyTagUploadStat>> {
+        val snapshot = connectionStore.loadDailyUploadTrackingSnapshot(scopeKey)
+        val today = LocalDate.now()
+        val baselineByTorrent = snapshot?.baselineByTorrent?.toMutableMap() ?: mutableMapOf()
+        val lastSeenByTorrent = snapshot?.lastSeenByTorrent?.toMutableMap() ?: mutableMapOf()
+        val snapshotDate = runCatching {
+            snapshot?.date?.takeIf { it.isNotBlank() }?.let(LocalDate::parse)
+        }.getOrNull()
+
+        if (snapshotDate != today) {
+            val carryOver = lastSeenByTorrent.toMap()
+            baselineByTorrent.clear()
+            baselineByTorrent.putAll(carryOver)
+        }
+
+        val activeKeys = torrents.map(::torrentTrackingKey).toSet()
+        baselineByTorrent.keys.retainAll(activeKeys)
+        lastSeenByTorrent.keys.retainAll(activeKeys)
+
+        val uploadByTag = mutableMapOf<String, Long>()
+        val torrentCountByTag = mutableMapOf<String, Int>()
+
+        torrents.forEach { torrent ->
+            val trackingKey = torrentTrackingKey(torrent)
+            val currentUploaded = torrent.uploaded.coerceAtLeast(0L)
+            val baseline = baselineByTorrent[trackingKey] ?: lastSeenByTorrent[trackingKey]
+
+            if (baseline == null) {
+                baselineByTorrent[trackingKey] = currentUploaded
+                lastSeenByTorrent[trackingKey] = currentUploaded
+                return@forEach
+            }
+
+            if (currentUploaded < baseline) {
+                baselineByTorrent[trackingKey] = currentUploaded
+                lastSeenByTorrent[trackingKey] = currentUploaded
+                return@forEach
+            }
+
+            val delta = currentUploaded - baseline
+            lastSeenByTorrent[trackingKey] = currentUploaded
+            if (delta <= 0L) return@forEach
+
+            val tags = parseTorrentTags(torrent.tags).ifEmpty { listOf(NO_TAG_KEY) }
+            val baseShare = delta / tags.size
+            var remainder = delta % tags.size
+            tags.forEach tagLoop@{ tag ->
+                val share = baseShare + if (remainder > 0L) {
+                    remainder -= 1L
+                    1L
+                } else {
+                    0L
+                }
+                if (share <= 0L) return@tagLoop
+                uploadByTag[tag] = (uploadByTag[tag] ?: 0L) + share
+                torrentCountByTag[tag] = (torrentCountByTag[tag] ?: 0) + 1
+            }
+        }
+
+        connectionStore.saveDailyUploadTrackingSnapshot(
+            scopeKey = scopeKey,
+            snapshot = DailyUploadTrackingSnapshot(
+                date = today.toString(),
+                baselineByTorrent = baselineByTorrent,
+                lastSeenByTorrent = lastSeenByTorrent,
+            ),
+        )
+
+        return today.toString() to uploadByTag.entries
+            .filter { it.value > 0L }
+            .sortedByDescending { it.value }
+            .map { (tag, uploaded) ->
+                DailyTagUploadStat(
+                    tag = tag,
+                    uploadedBytes = uploaded,
+                    torrentCount = torrentCountByTag[tag] ?: 0,
+                    isNoTag = tag == NO_TAG_KEY,
+                )
+            }
+    }
+
+    private suspend fun buildDashboardCountryUploadStatsForScope(
+        scopeKey: String,
+        torrents: List<TorrentInfo>,
+        fetchPeerSnapshots: suspend (List<String>) -> List<CountryPeerSnapshot>,
+    ): com.hjw.qbremote.data.model.DailyCountryUploadStats {
+        val snapshot = connectionStore.loadDailyCountryUploadTrackingSnapshot(scopeKey)
+        val today = LocalDate.now()
+        val totalsByCountry = snapshot?.totalsByCountry?.toMutableMap() ?: mutableMapOf()
+        val peerSnapshots = snapshot?.peerSnapshots?.toMutableMap() ?: mutableMapOf()
+        val lastSeenByTorrent = snapshot?.lastSeenByTorrent?.toMutableMap() ?: mutableMapOf()
+        val snapshotDate = runCatching {
+            snapshot?.date?.takeIf { it.isNotBlank() }?.let(LocalDate::parse)
+        }.getOrNull()
+
+        if (snapshotDate != today) {
+            totalsByCountry.clear()
+            peerSnapshots.clear()
+            lastSeenByTorrent.clear()
+        }
+
+        val activeKeys = torrents.map(::torrentTrackingKey).toSet()
+        lastSeenByTorrent.keys.retainAll(activeKeys)
+
+        val activeHashes = mutableListOf<String>()
+        torrents.forEach { torrent ->
+            val trackingKey = torrentTrackingKey(torrent)
+            val hash = torrent.hash.trim()
+            if (hash.isBlank()) return@forEach
+            val currentUploaded = torrent.uploaded.coerceAtLeast(0L)
+            val previousUploaded = lastSeenByTorrent[trackingKey]
+            lastSeenByTorrent[trackingKey] = currentUploaded
+            if (previousUploaded == null) {
+                if (torrent.uploadSpeed > 0L) {
+                    activeHashes += hash
+                }
+                return@forEach
+            }
+            if (currentUploaded > previousUploaded || torrent.uploadSpeed > 0L) {
+                activeHashes += hash
+            }
+        }
+
+        val samples = fetchPeerSnapshots(activeHashes.distinct())
+        val currentPeerSnapshots = samples.associateBy { it.key }
+        val fallbackNames = samples
+            .groupBy { it.countryCode.trim().uppercase(Locale.US) }
+            .mapValues { (_, entries) ->
+                entries.firstNotNullOfOrNull { it.countryName.trim().takeIf(String::isNotBlank) }.orEmpty()
+            }
+
+        samples.forEach { entry ->
+            val countryCode = entry.countryCode.trim().uppercase(Locale.US)
+            if (countryCode.isBlank()) return@forEach
+            val previous = peerSnapshots[entry.key]
+            val previousUploaded = previous?.uploadedBytes?.coerceAtLeast(0L)
+            val currentUploaded = entry.uploadedBytes.coerceAtLeast(0L)
+            val delta = when {
+                previousUploaded == null -> 0L
+                currentUploaded < previousUploaded -> currentUploaded
+                else -> currentUploaded - previousUploaded
+            }
+            if (delta <= 0L) return@forEach
+            totalsByCountry[countryCode] = (totalsByCountry[countryCode] ?: 0L) + delta
+        }
+
+        peerSnapshots.keys.retainAll(currentPeerSnapshots.keys)
+        peerSnapshots.putAll(currentPeerSnapshots)
+
+        connectionStore.saveDailyCountryUploadTrackingSnapshot(
+            scopeKey = scopeKey,
+            snapshot = DailyCountryUploadTrackingSnapshot(
+                date = today.toString(),
+                totalsByCountry = totalsByCountry,
+                peerSnapshots = peerSnapshots,
+                lastSeenByTorrent = lastSeenByTorrent,
+            ),
+        )
+
+        return com.hjw.qbremote.data.model.DailyCountryUploadStats(
+            dateLabel = today.toString(),
+            countries = totalsByCountry.entries
+                .filter { it.value > 0L }
+                .sortedByDescending { it.value }
+                .map { (countryCode, uploadedBytes) ->
+                    CountryUploadRecord(
+                        countryCode = countryCode,
+                        countryName = fallbackNames[countryCode].orEmpty(),
+                        uploadedBytes = uploadedBytes,
+                    )
+                },
+        )
+    }
+
+    private fun sampleHomeRealtimeSpeedPoint(
+        transferInfo: TransferInfo,
+        onlineServerCount: Int,
+    ): List<RealtimeSpeedPoint> {
+        val nextPoint = RealtimeSpeedPoint(
+            timestamp = System.currentTimeMillis(),
+            uploadSpeed = transferInfo.uploadSpeed.coerceAtLeast(0L),
+            downloadSpeed = transferInfo.downloadSpeed.coerceAtLeast(0L),
+            onlineServerCount = onlineServerCount.coerceAtLeast(0),
+        )
+        val lastPoint = homeRealtimeSpeedSeries.lastOrNull()
+        if (
+            lastPoint != null &&
+            nextPoint.timestamp - lastPoint.timestamp < HOME_REALTIME_SPEED_MIN_SAMPLE_INTERVAL_MS
+        ) {
+            homeRealtimeSpeedSeries[homeRealtimeSpeedSeries.lastIndex] = nextPoint
+        } else {
+            homeRealtimeSpeedSeries += nextPoint
+        }
+        while (homeRealtimeSpeedSeries.size > HOME_REALTIME_SPEED_MAX_POINTS) {
+            homeRealtimeSpeedSeries.removeAt(0)
+        }
+        return homeRealtimeSpeedSeries.toList()
+    }
+
+    private fun clearHomeRealtimeSpeedSeries() {
+        homeRealtimeSpeedSeries.clear()
+    }
+
     private fun parseLimitKbToBytes(value: String): Long {
         val trimmed = value.trim()
         if (trimmed.isEmpty()) return -1L
@@ -710,25 +2360,61 @@ class MainViewModel(
             normalized.contains("no address associated with hostname")
     }
 
+    private fun maybeQueueBackendRepair(
+        profileId: String,
+        profileName: String,
+        error: BackendConnectionError.WrongBackend,
+    ) {
+        _uiState.update { current ->
+            current.copy(
+                pendingBackendRepair = PendingBackendRepair(
+                    profileId = profileId,
+                    profileName = profileName.ifBlank { profileId },
+                    expectedBackend = error.expected,
+                    detectedBackend = error.detected,
+                    detail = error.detail,
+                ),
+            )
+        }
+    }
+
+    private fun userFacingConnectionMessage(error: Throwable): String {
+        return when (error) {
+            is BackendConnectionError.WrongBackend -> {
+                "服务器类型不匹配，目标看起来是 ${backendDisplayName(error.detected)}。"
+            }
+
+            is BackendConnectionError.RpcPathNotFound -> {
+                if (error.failureSummary.isBlank()) {
+                    "Transmission RPC 路径未找到。"
+                } else {
+                    "Transmission RPC 路径未找到。${error.failureSummary}"
+                }
+            }
+
+            is BackendConnectionError.AuthFailed -> "${backendDisplayName(error.backendType)} 认证失败。"
+            else -> error.message?.takeIf { it.isNotBlank() } ?: "刷新失败"
+        }
+    }
+
+    private fun backendDisplayName(type: ServerBackendType): String {
+        return when (type) {
+            ServerBackendType.QBITTORRENT -> "qBittorrent"
+            ServerBackendType.TRANSMISSION -> "Transmission"
+        }
+    }
+
     private fun hydrateDashboardCacheForCurrentScope(force: Boolean = false) {
         val scopeKey = currentDailyUploadTrackingScopeKey()
         if (!force && scopeKey == hydratedDashboardScopeKey && _uiState.value.dashboardCacheHydrated) {
             return
         }
 
-        val scopeChanged = hydratedDashboardScopeKey != scopeKey
         hydratedDashboardScopeKey = scopeKey
         dashboardCacheHydrationJob?.cancel()
         _uiState.update { current ->
             current.copy(
-                transferInfo = if (scopeChanged && !current.connected) TransferInfo() else current.transferInfo,
-                torrents = if (scopeChanged && !current.connected) emptyList() else current.torrents,
-                dailyTagUploadDate = if (scopeChanged && !current.connected) "" else current.dailyTagUploadDate,
-                dailyTagUploadStats = if (scopeChanged && !current.connected) emptyList() else current.dailyTagUploadStats,
-                dailyCountryUploadDate = if (scopeChanged && !current.connected) "" else current.dailyCountryUploadDate,
-                dailyCountryUploadStats = if (scopeChanged && !current.connected) emptyList() else current.dailyCountryUploadStats,
                 dashboardCacheHydrated = false,
-                hasDashboardSnapshot = false,
             )
         }
 
@@ -764,6 +2450,7 @@ class MainViewModel(
                     )
                 }
             }
+            markInitialDashboardCacheHydrated()
         }
     }
 
@@ -826,16 +2513,13 @@ class MainViewModel(
                 delay(COUNTRY_TRACKER_SAMPLE_INTERVAL_MS)
                 val state = _uiState.value
                 if (!state.connected) continue
-                if (!state.settings.showChartPanel || !state.settings.showCountryFlowCard) continue
+                if (!state.activeCapabilities.supportsCountryDistribution) continue
 
                 val candidateHashes = collectTrackedCountryHashes(state.torrents, refreshActivity = false)
                 if (candidateHashes.isEmpty()) continue
 
                 val countryStats = countryTrackingMutex.withLock {
-                    sampleDailyCountryUploadStats(
-                        activeHashes = candidateHashes,
-                        torrents = state.torrents,
-                    )
+                    sampleDailyCountryUploadStats(activeHashes = candidateHashes)
                 }
                 _uiState.update {
                     it.copy(
@@ -854,6 +2538,7 @@ class MainViewModel(
             RefreshScene.TORRENT_DETAIL -> base
             RefreshScene.SETTINGS -> (base * 2).coerceIn(10, 120)
             RefreshScene.DASHBOARD -> base
+            RefreshScene.SERVER -> base
         }
         return adaptiveSeconds * 1000L
     }
@@ -886,7 +2571,6 @@ class MainViewModel(
         dailyCountryPeerSnapshots.clear()
         dailyCountryLastSeenByTorrent.clear()
         activeCountryTrackedHashes.clear()
-        recentCountryDistributionSamples.clear()
         _uiState.update {
             it.copy(
                 dailyCountryUploadDate = "",
@@ -998,21 +2682,17 @@ class MainViewModel(
     private suspend fun buildDailyCountryUploadStats(torrents: List<TorrentInfo>): DailyCountryUploadStats {
         val scopeKey = currentDailyUploadTrackingScopeKey()
         ensureDailyCountryUploadTrackingLoaded(scopeKey)
-        ensureDailyUploadTrackingLoaded(scopeKey)
         val activeHashes = collectTrackedCountryHashes(torrents, refreshActivity = true)
         return sampleDailyCountryUploadStats(
             activeHashes = activeHashes,
-            torrents = torrents,
         )
     }
 
     private suspend fun sampleDailyCountryUploadStats(
         activeHashes: List<String>,
-        torrents: List<TorrentInfo>,
     ): DailyCountryUploadStats {
         val scopeKey = currentDailyUploadTrackingScopeKey()
         ensureDailyCountryUploadTrackingLoaded(scopeKey)
-        ensureDailyUploadTrackingLoaded(scopeKey)
         val today = LocalDate.now()
         if (dailyCountryTrackingDate != today) {
             dailyCountryTrackingDate = today
@@ -1020,7 +2700,6 @@ class MainViewModel(
             dailyCountryPeerSnapshots.clear()
             dailyCountryLastSeenByTorrent.clear()
             activeCountryTrackedHashes.clear()
-            recentCountryDistributionSamples.clear()
         }
 
         val samples = if (activeHashes.isNotEmpty()) {
@@ -1056,16 +2735,6 @@ class MainViewModel(
 
         val confirmedCountryTotals = dailyCountryTotalsByCode
             .filterValues { it > 0L }
-        val peerCountsByCountry = currentPeerSnapshots.values
-            .groupingBy { it.countryCode.trim().uppercase(Locale.US) }
-            .eachCount()
-            .filterKeys { it.isNotBlank() }
-            .mapValues { (_, count) -> count.toLong() }
-
-        recordCountryDistributionSample(
-            sampledTotals = confirmedCountryTotals,
-            peerCountsByCountry = peerCountsByCountry,
-        )
 
         connectionStore.saveDailyCountryUploadTrackingSnapshot(
             scopeKey = scopeKey,
@@ -1074,24 +2743,12 @@ class MainViewModel(
                 totalsByCountry = dailyCountryTotalsByCode.toMap(),
                 peerSnapshots = dailyCountryPeerSnapshots.toMap(),
                 lastSeenByTorrent = dailyCountryLastSeenByTorrent.toMap(),
-                recentSamples = recentCountryDistributionSamples.toList(),
             ),
-        )
-
-        val smoothedSampledTotals = aggregateRecentCountrySampledTotals()
-        val smoothedPeerCounts = aggregateRecentCountryPeerCounts()
-
-        val exactTotalUploaded = computeExactDailyUploadedTotalBytes(torrents)
-        val estimatedCountryTotals = estimateCountryUploadTotals(
-            confirmedTotals = confirmedCountryTotals,
-            sampledTotals = smoothedSampledTotals,
-            peerCountsByCountry = smoothedPeerCounts,
-            exactTotalUploaded = exactTotalUploaded,
         )
 
         return DailyCountryUploadStats(
             dateLabel = today.toString(),
-            countries = estimatedCountryTotals.entries
+            countries = confirmedCountryTotals.entries
                 .sortedByDescending { it.value }
                 .map { (countryCode, uploadedBytes) ->
                     CountryUploadRecord(
@@ -1143,209 +2800,6 @@ class MainViewModel(
             .sorted()
     }
 
-    private fun computeExactDailyUploadedTotalBytes(torrents: List<TorrentInfo>): Long {
-        val today = LocalDate.now()
-        if (dailyUploadBaselineDate != today) return 0L
-
-        return torrents.sumOf { torrent ->
-            val trackingKey = torrentTrackingKey(torrent)
-            val baseline = dailyUploadBaselineByTorrent[trackingKey] ?: return@sumOf 0L
-            val currentUploaded = (dailyUploadLastSeenByTorrent[trackingKey] ?: torrent.uploaded)
-                .coerceAtLeast(0L)
-            (currentUploaded - baseline).coerceAtLeast(0L)
-        }
-    }
-
-    private fun recordCountryDistributionSample(
-        sampledTotals: Map<String, Long>,
-        peerCountsByCountry: Map<String, Long>,
-    ) {
-        if (sampledTotals.isEmpty() && peerCountsByCountry.isEmpty()) return
-        recentCountryDistributionSamples += CountryDistributionSample(
-            sampledTotals = sampledTotals,
-            peerCountsByCountry = peerCountsByCountry,
-        )
-        if (recentCountryDistributionSamples.size > COUNTRY_DISTRIBUTION_SAMPLE_WINDOW_SIZE) {
-            recentCountryDistributionSamples.removeAt(0)
-        }
-    }
-
-    private fun aggregateRecentCountrySampledTotals(): Map<String, Long> {
-        val aggregated = mutableMapOf<String, Long>()
-        recentCountryDistributionSamples.forEachIndexed { index, sample ->
-            val weight = (index + 1).toLong()
-            sample.sampledTotals.forEach { (countryCode, uploadedBytes) ->
-                aggregated[countryCode] = (aggregated[countryCode] ?: 0L) + (uploadedBytes * weight)
-            }
-        }
-        return aggregated.filterValues { it > 0L }
-    }
-
-    private fun aggregateRecentCountryPeerCounts(): Map<String, Long> {
-        val aggregated = mutableMapOf<String, Long>()
-        recentCountryDistributionSamples.forEachIndexed { index, sample ->
-            val weight = (index + 1).toLong()
-            sample.peerCountsByCountry.forEach { (countryCode, peerCount) ->
-                aggregated[countryCode] = (aggregated[countryCode] ?: 0L) + (peerCount * weight)
-            }
-        }
-        return aggregated.filterValues { it > 0L }
-    }
-
-    private fun estimateCountryUploadTotals(
-        confirmedTotals: Map<String, Long>,
-        sampledTotals: Map<String, Long>,
-        peerCountsByCountry: Map<String, Long>,
-        exactTotalUploaded: Long,
-    ): Map<String, Long> {
-        val normalizedConfirmedTotals = confirmedTotals.filterValues { it > 0L }
-        if (normalizedConfirmedTotals.isEmpty() && sampledTotals.isEmpty() && peerCountsByCountry.isEmpty()) {
-            return emptyMap()
-        }
-
-        val confirmedTotalUploaded = normalizedConfirmedTotals.values.sum()
-        val unresolvedUploaded = if (exactTotalUploaded > 0L) {
-            (exactTotalUploaded - confirmedTotalUploaded).coerceAtLeast(0L)
-        } else {
-            0L
-        }
-
-        if (unresolvedUploaded <= 0L) {
-            return normalizedConfirmedTotals
-        }
-
-        if (sampledTotals.isEmpty() && peerCountsByCountry.isEmpty()) {
-            return normalizedConfirmedTotals
-        }
-
-        val sampledTotalUploaded = sampledTotals.values.sum().coerceAtLeast(1L)
-        val peerTotalCount = peerCountsByCountry.values.sum().coerceAtLeast(1L)
-        val targetTotalUploaded = unresolvedUploaded
-
-        val allCountryCodes = (sampledTotals.keys + peerCountsByCountry.keys)
-            .filter { it.isNotBlank() }
-            .distinct()
-        if (allCountryCodes.isEmpty()) return normalizedConfirmedTotals
-
-        val onlyOneSampledCountry = sampledTotals.filterValues { it > 0L }.size <= 1
-        val hasMultiplePeerCountries = peerCountsByCountry.filterValues { it > 0 }.size > 1
-        val rawShares = linkedMapOf<String, Double>()
-        val estimated = linkedMapOf<String, Long>()
-        val remainders = mutableListOf<Pair<String, Long>>()
-        var assigned = 0L
-
-        allCountryCodes
-            .sortedWith(
-                compareByDescending<String> { sampledTotals[it] ?: 0L }
-                    .thenByDescending { peerCountsByCountry[it] ?: 0L }
-            )
-            .forEach { countryCode ->
-                val sampledUploaded = sampledTotals[countryCode] ?: 0L
-                val peerCount = peerCountsByCountry[countryCode] ?: 0L
-
-                val sampledShare = if (sampledUploaded > 0L) {
-                    sampledUploaded.toDouble() / sampledTotalUploaded.toDouble()
-                } else {
-                    0.0
-                }
-                val peerShare = if (peerCount > 0L) {
-                    peerCount.toDouble() / peerTotalCount.toDouble()
-                } else {
-                    0.0
-                }
-
-                val blendedShare = when {
-                    onlyOneSampledCountry && hasMultiplePeerCountries -> peerShare
-                    sampledShare <= 0.0 -> peerShare
-                    peerShare <= 0.0 -> sampledShare
-                    else -> (sampledShare * 0.7) + (peerShare * 0.3)
-                }
-                rawShares[countryCode] = blendedShare.coerceAtLeast(0.0)
-            }
-
-        val adjustedShares = applyCountryDistributionConstraints(rawShares)
-
-        adjustedShares
-            .forEach { (countryCode, adjustedShare) ->
-                val scaled = adjustedShare * targetTotalUploaded.toDouble()
-                val estimatedUploaded = scaled.toLong().coerceAtLeast(0L)
-                val remainder = ((scaled - estimatedUploaded) * 1_000_000).toLong()
-                estimated[countryCode] = estimatedUploaded
-                remainders += countryCode to remainder
-                assigned += estimatedUploaded
-            }
-
-        var leftover = (targetTotalUploaded - assigned).coerceAtLeast(0L)
-        if (leftover > 0L) {
-            remainders
-                .sortedByDescending { it.second }
-                .forEach { (countryCode, _) ->
-                    if (leftover <= 0L) return@forEach
-                    estimated[countryCode] = (estimated[countryCode] ?: 0L) + 1L
-                    leftover -= 1L
-                }
-        }
-
-        val mergedTotals = normalizedConfirmedTotals.toMutableMap()
-        estimated
-            .filterValues { it > 0L }
-            .forEach { (countryCode, uploadedBytes) ->
-                mergedTotals[countryCode] = (mergedTotals[countryCode] ?: 0L) + uploadedBytes
-            }
-
-        return mergedTotals.filterValues { it > 0L }
-    }
-
-    private fun applyCountryDistributionConstraints(
-        rawShares: Map<String, Double>,
-    ): Map<String, Double> {
-        val positiveShares = rawShares
-            .filterValues { it > 0.0 }
-            .toMutableMap()
-        if (positiveShares.isEmpty()) return emptyMap()
-        if (positiveShares.size == 1) return positiveShares
-
-        positiveShares.keys.forEach { countryCode ->
-            positiveShares[countryCode] = (positiveShares[countryCode] ?: 0.0) + COUNTRY_DISTRIBUTION_FLOOR_BOOST
-        }
-
-        normalizeShareMapInPlace(positiveShares)
-
-        val topEntry = positiveShares.maxByOrNull { it.value } ?: return positiveShares
-        if (topEntry.value <= COUNTRY_DISTRIBUTION_MAX_SINGLE_SHARE) {
-            return positiveShares
-        }
-
-        val topCountry = topEntry.key
-        val excess = topEntry.value - COUNTRY_DISTRIBUTION_MAX_SINGLE_SHARE
-        positiveShares[topCountry] = COUNTRY_DISTRIBUTION_MAX_SINGLE_SHARE
-
-        val otherCountries = positiveShares.keys.filter { it != topCountry }
-        val otherTotal = otherCountries.sumOf { positiveShares[it] ?: 0.0 }
-        if (otherTotal > 0.0) {
-            otherCountries.forEach { countryCode ->
-                val current = positiveShares[countryCode] ?: 0.0
-                positiveShares[countryCode] = current + (excess * (current / otherTotal))
-            }
-        } else {
-            val evenShare = excess / otherCountries.size.coerceAtLeast(1)
-            otherCountries.forEach { countryCode ->
-                positiveShares[countryCode] = (positiveShares[countryCode] ?: 0.0) + evenShare
-            }
-        }
-
-        normalizeShareMapInPlace(positiveShares)
-        return positiveShares
-    }
-
-    private fun normalizeShareMapInPlace(shares: MutableMap<String, Double>) {
-        val total = shares.values.sum()
-        if (total <= 0.0) return
-        shares.keys.toList().forEach { countryCode ->
-            shares[countryCode] = (shares[countryCode] ?: 0.0) / total
-        }
-    }
-
     private suspend fun ensureDailyCountryUploadTrackingLoaded(scopeKey: String) {
         if (dailyCountryTrackingScopeKey == scopeKey) return
 
@@ -1355,7 +2809,6 @@ class MainViewModel(
         dailyCountryPeerSnapshots.clear()
         dailyCountryLastSeenByTorrent.clear()
         activeCountryTrackedHashes.clear()
-        recentCountryDistributionSamples.clear()
 
         val snapshot = connectionStore.loadDailyCountryUploadTrackingSnapshot(scopeKey) ?: return
         dailyCountryTrackingDate = runCatching {
@@ -1366,7 +2819,6 @@ class MainViewModel(
         dailyCountryTotalsByCode.putAll(snapshot.totalsByCountry)
         dailyCountryPeerSnapshots.putAll(snapshot.peerSnapshots)
         dailyCountryLastSeenByTorrent.putAll(snapshot.lastSeenByTorrent)
-        recentCountryDistributionSamples.addAll(snapshot.recentSamples.takeLast(COUNTRY_DISTRIBUTION_SAMPLE_WINDOW_SIZE))
     }
 
     private fun currentDailyUploadTrackingScopeKey(): String {
@@ -1409,6 +2861,9 @@ class MainViewModel(
         autoRefreshJob?.cancel()
         hourlyBoundaryRefreshJob?.cancel()
         countryPeerTrackerJob?.cancel()
+        dashboardAggregationJob?.cancel()
+        serverSchedulerJob?.cancel()
+        repository.clearAllSessions()
         super.onCleared()
     }
 
@@ -1416,13 +2871,12 @@ class MainViewModel(
         private const val NO_TAG_KEY = "__NO_TAG__"
         private const val COUNTRY_TRACKER_SAMPLE_INTERVAL_MS = 1_500L
         private const val COUNTRY_TRACKER_ACTIVE_TTL_MS = 20_000L
-        private const val COUNTRY_DISTRIBUTION_SAMPLE_WINDOW_SIZE = 8
-        private const val COUNTRY_DISTRIBUTION_MAX_SINGLE_SHARE = 0.72
-        private const val COUNTRY_DISTRIBUTION_FLOOR_BOOST = 0.03
+        private const val HOME_REALTIME_SPEED_MIN_SAMPLE_INTERVAL_MS = 1_000L
+        private const val HOME_REALTIME_SPEED_MAX_POINTS = 60
 
         fun factory(
             connectionStore: ConnectionStore,
-            repository: QbRepository,
+            repository: TorrentRepository,
         ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {

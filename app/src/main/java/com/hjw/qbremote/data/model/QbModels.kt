@@ -88,6 +88,7 @@ data class TorrentFileInfo(
 )
 
 data class TorrentTracker(
+    val backendTrackerId: Int = -1,
     @SerializedName("url") val url: String = "",
     @SerializedName("status") val status: Int = 0,
     @SerializedName("msg") val message: String = "",

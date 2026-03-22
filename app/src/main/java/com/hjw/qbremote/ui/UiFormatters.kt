@@ -2,6 +2,8 @@
 
 import com.hjw.qbremote.data.model.CountryUploadRecord
 import java.text.SimpleDateFormat
+import java.net.URI
+import java.net.URLEncoder
 import java.util.Date
 import java.util.Locale
 
@@ -126,4 +128,201 @@ fun compactCountryLabelForDisplay(
     } else {
         localizedName
     }
+}
+
+fun buildMagnetUri(
+    hash: String,
+    name: String,
+    trackerUrls: List<String> = emptyList(),
+): String {
+    val normalizedHash = hash.trim()
+    if (normalizedHash.isBlank()) return ""
+
+    val builder = StringBuilder("magnet:?xt=urn:btih:")
+    builder.append(normalizedHash)
+
+    val normalizedName = name.trim()
+    if (normalizedName.isNotBlank()) {
+        builder.append("&dn=")
+        builder.append(urlEncodeMagnetComponent(normalizedName))
+    }
+
+    trackerUrls
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinct()
+        .forEach { trackerUrl ->
+            builder.append("&tr=")
+            builder.append(urlEncodeMagnetComponent(trackerUrl))
+        }
+
+    return builder.toString()
+}
+
+fun buildTorrentExportFileName(
+    torrentName: String,
+    hash: String,
+): String {
+    val baseName = torrentName
+        .trim()
+        .ifBlank { hash.trim().ifBlank { "torrent" } }
+        .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        .trim()
+        .trim('.')
+        .ifBlank { "torrent" }
+    return if (baseName.endsWith(".torrent", ignoreCase = true)) {
+        baseName
+    } else {
+        "$baseName.torrent"
+    }
+}
+
+fun formatTrackerSiteName(
+    tracker: String,
+    unknownLabel: String,
+): String {
+    val host = parseTrackerHost(tracker) ?: return unknownLabel
+    val normalized = host
+        .trim()
+        .lowercase(Locale.US)
+        .split('.')
+        .filter { it.isNotBlank() }
+        .dropWhile { it in TRACKER_HOST_PREFIXES }
+    if (normalized.isEmpty()) return unknownLabel
+    if (normalized.size == 1) return normalized.first()
+
+    val candidate = when {
+        normalized.size >= 3 &&
+            normalized.last().length == 2 &&
+            normalized[normalized.lastIndex - 1] in DOUBLE_SUFFIX_MARKERS -> {
+            normalized[normalized.lastIndex - 2]
+        }
+
+        else -> normalized[normalized.lastIndex - 1]
+    }
+    return candidate.ifBlank { normalized.firstOrNull().orEmpty().ifBlank { unknownLabel } }
+}
+
+private val TRACKER_HOST_PREFIXES = setOf("tracker", "announce", "www")
+private val DOUBLE_SUFFIX_MARKERS = setOf("co", "com", "net", "org", "gov", "edu")
+private val SENSITIVE_TRACKER_QUERY_KEYS = setOf("passkey", "authkey", "token", "key", "uid")
+
+private fun parseTrackerHost(tracker: String): String? {
+    val trimmed = tracker.trim()
+    if (trimmed.isBlank()) return null
+    val direct = runCatching { URI(trimmed).host.orEmpty().trim() }.getOrDefault("")
+    if (direct.isNotBlank()) return direct
+
+    val fallback = trimmed
+        .removePrefix("https://")
+        .removePrefix("http://")
+        .removePrefix("udp://")
+        .substringBefore('/')
+        .substringBefore(':')
+        .trim()
+    return fallback.takeIf { it.isNotBlank() }
+}
+
+fun maskTrackerUrl(url: String): String {
+    val trimmed = url.trim()
+    if (trimmed.isBlank()) return "-"
+    return runCatching {
+        val uri = URI(trimmed)
+        val scheme = uri.scheme?.takeIf { it.isNotBlank() }?.let { "$it://" }.orEmpty()
+        val authority = uri.rawAuthority?.takeIf { it.isNotBlank() }
+            ?: parseTrackerHost(trimmed).orEmpty()
+        val path = maskTrackerPath(uri.rawPath.orEmpty())
+        val query = maskTrackerQuery(uri.rawQuery.orEmpty())
+        buildString {
+            append(scheme)
+            append(authority)
+            append(path)
+            if (query.isNotBlank()) {
+                append('?')
+                append(query)
+            }
+        }.ifBlank { trimmed }
+    }.getOrElse {
+        maskTrackerFallback(trimmed)
+    }
+}
+
+fun isMutableTrackerUrl(url: String): Boolean {
+    val trimmed = url.trim()
+    if (trimmed.isBlank()) return false
+    val uppercase = trimmed.uppercase(Locale.US)
+    if (
+        uppercase.contains("[DHT]") ||
+        uppercase.contains("[PEX]") ||
+        uppercase.contains("[LSD]")
+    ) {
+        return false
+    }
+    return runCatching {
+        val uri = URI(trimmed)
+        !uri.scheme.isNullOrBlank() && !uri.host.isNullOrBlank()
+    }.getOrDefault(false)
+}
+
+private fun maskTrackerPath(path: String): String {
+    if (path.isBlank()) return ""
+    val maskedSegments = path
+        .split('/')
+        .map { segment ->
+            when {
+                segment.isBlank() -> segment
+                shouldMaskTrackerPathSegment(segment) -> "******"
+                else -> segment
+            }
+        }
+    return maskedSegments.joinToString("/")
+}
+
+private fun maskTrackerQuery(query: String): String {
+    if (query.isBlank()) return ""
+    return query
+        .split('&')
+        .filter { it.isNotBlank() }
+        .joinToString("&") { part ->
+            val key = part.substringBefore('=').trim()
+            val value = part.substringAfter('=', missingDelimiterValue = "")
+            when {
+                key.isBlank() -> part
+                key.lowercase(Locale.US) in SENSITIVE_TRACKER_QUERY_KEYS -> "$key=******"
+                shouldMaskTrackerPathSegment(value) -> "$key=******"
+                else -> part
+            }
+        }
+}
+
+private fun shouldMaskTrackerPathSegment(segment: String): Boolean {
+    val trimmed = segment.trim()
+    if (trimmed.length < 14) return false
+    if (trimmed.equals("announce", ignoreCase = true)) return false
+    val alphaCount = trimmed.count(Char::isLetter)
+    val digitCount = trimmed.count(Char::isDigit)
+    return (alphaCount >= 4 && digitCount >= 2) || trimmed.contains('%') || trimmed.contains('_')
+}
+
+private fun maskTrackerFallback(url: String): String {
+    val scheme = when {
+        url.startsWith("https://", ignoreCase = true) -> "https://"
+        url.startsWith("http://", ignoreCase = true) -> "http://"
+        url.startsWith("udp://", ignoreCase = true) -> "udp://"
+        else -> ""
+    }
+    val withoutScheme = url.removePrefix("https://").removePrefix("http://").removePrefix("udp://")
+    val host = withoutScheme.substringBefore('/').substringBefore('?').trim()
+    val pathAndQuery = withoutScheme.removePrefix(host)
+    val maskedPathAndQuery = pathAndQuery
+        .replace(Regex("([?&](?:passkey|authkey|token|key|uid)=)[^&]+", RegexOption.IGNORE_CASE), "$1******")
+    return buildString {
+        append(scheme)
+        append(host)
+        append(maskedPathAndQuery)
+    }.ifBlank { url }
+}
+
+private fun urlEncodeMagnetComponent(value: String): String {
+    return URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
 }

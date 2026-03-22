@@ -1,13 +1,16 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">qbitremote</string>
+    <string name="app_name">TorrentRemote</string>
 
     <string name="menu_settings">设置</string>
     <string name="menu_servers">服务器</string>
     <string name="menu_theme">主题</string>
+    <string name="brand_qbittorrent">qBittorrent</string>
+    <string name="backend_qbittorrent">qBittorrent</string>
+    <string name="backend_transmission">Transmission</string>
     <string name="theme_dark">深色主题</string>
     <string name="theme_light">浅色主题</string>
-    <string name="theme_custom">自定义</string>
+    <string name="theme_custom_background">自定义背景</string>
     <string name="theme_custom_upload">选择图片</string>
     <string name="theme_custom_replace">重新选择</string>
     <string name="theme_custom_save_apply">保存并应用</string>
@@ -19,15 +22,6 @@
     <string name="back">返回</string>
     <string name="go_to_settings">前往设置</string>
 
-    <string name="settings_title">设置</string>
-    <string name="settings_show_speed_totals">显示总上传/下载量</string>
-    <string name="settings_enable_server_grouping">按站点分组显示</string>
-    <string name="settings_show_chart_panel">显示图表面板</string>
-    <string name="settings_show_country_flow_card">显示今日上传国家分布卡片</string>
-    <string name="settings_show_upload_distribution_card">显示今日上传量卡片</string>
-    <string name="settings_show_category_distribution_card">显示分类占比卡片</string>
-    <string name="settings_show_site_name">图表中显示站点名称</string>
-    <string name="settings_chart_sort_mode">图表排序方式</string>
     <string name="settings_language">语言</string>
     <string name="settings_language_system">跟随系统</string>
     <string name="settings_language_zh_cn">简体中文</string>
@@ -36,16 +30,18 @@
     <string name="settings_language_apply_hint">选择语言后点击“保存”，并立即生效</string>
     <string name="settings_delete_when_no_seeders">无做种时默认勾选删除文件</string>
     <string name="settings_delete_by_default">删除种子时默认勾选删除文件</string>
-    <string name="done">完成</string>
 
-    <string name="connect_first_hint">请先连接 qBittorrent 服务器后再查看种子详情。</string>
+    <string name="connect_first_hint">请先连接服务器后再查看种子详情。</string>
     <string name="connection_title">连接设置</string>
+    <string name="connection_backend_label">后端类型</string>
     <string name="connection_host_label">主机 / IP</string>
     <string name="connection_host_hint">例如：192.168.1.12 或 https://qb.example.com</string>
     <string name="connection_port_label">端口</string>
     <string name="connection_refresh_label">刷新间隔（秒）</string>
     <string name="connection_username_label">用户名</string>
     <string name="connection_password_label">密码</string>
+    <string name="password_visibility_show">显示密码</string>
+    <string name="password_visibility_hide">隐藏密码</string>
     <string name="connection_https_label">HTTPS</string>
     <string name="connect">连接</string>
     <string name="connecting">连接中…</string>
@@ -58,16 +54,7 @@
     <string name="global_total_up_fmt">总上传量：%1$s</string>
     <string name="server_version_fmt">版本 %1$s</string>
 
-    <string name="chart_panel_title_fmt">图表面板（%1$s）</string>
     <string name="chart_no_data">暂无图表数据。</string>
-    <string name="chart_sort_total_speed">总速度</string>
-    <string name="chart_sort_download_speed">下载速度</string>
-    <string name="chart_sort_upload_speed">上传速度</string>
-    <string name="chart_sort_torrent_count">种子数量</string>
-    <string name="chart_metric_total_fmt">总速度：%1$s</string>
-    <string name="chart_metric_down_fmt">下载：%1$s</string>
-    <string name="chart_metric_up_fmt">上传：%1$s</string>
-    <string name="chart_metric_torrents_fmt">种子数：%1$d</string>
     <string name="chart_other_label">其他</string>
     <plurals name="chart_category_count">
         <item quantity="other">%1$d 个种子</item>
@@ -76,12 +63,15 @@
     <string name="dashboard_daily_tag_upload_empty">当前自然日暂无上传数据。</string>
     <string name="dashboard_upload_title">上传量</string>
     <string name="dashboard_upload_title_with_date">上传量（%1$s）</string>
+    <string name="dashboard_tag_upload_share_title">标签上传量占比</string>
+    <string name="dashboard_torrent_state_share_title">种子状态占比</string>
+    <string name="dashboard_tracker_site_share_title">Tracker 站点占比</string>
+    <string name="dashboard_tracker_site_unknown">未知站点</string>
     <string name="dashboard_open_torrents">查看种子</string>
     <string name="dashboard_open_torrents_hint">点此进入</string>
-    <string name="dashboard_country_flow_title">今日上传量分布（预估）</string>
-    <string name="dashboard_country_flow_empty">暂无今日国家上传估算数据。</string>
-    <string name="dashboard_country_hide_hint">提示：双击卡片顶部可隐藏</string>
-    <string name="dashboard_country_hidden_snack">已隐藏，可在设置中重新显示</string>
+    <string name="dashboard_country_flow_title">今日已观测上传分布</string>
+    <string name="dashboard_country_flow_empty">当前暂无可观测的国家上传数据。</string>
+    <string name="dashboard_country_flow_note">数据仅基于当前活跃连接的 peer 观测增量，可能低于实际全天上传总量。</string>
     <string name="dismiss_hint">关闭提示</string>
 
     <string name="status_uploading">上传中</string>
@@ -89,6 +79,7 @@
     <string name="status_paused">暂停中</string>
     <string name="status_error">错误</string>
     <string name="status_checking">校验中</string>
+    <string name="status_completed">已完成</string>
     <string name="status_waiting">等待中</string>
     <string name="status_total_torrents">总种子</string>
 
@@ -112,6 +103,8 @@
     <string name="pause">暂停</string>
     <string name="resume">继续</string>
     <string name="delete">删除</string>
+    <string name="edit">编辑</string>
+    <string name="copy">复制</string>
     <string name="hide">隐藏</string>
     <string name="cancel">取消</string>
     <string name="delete_files">同时删除文件</string>
@@ -119,6 +112,17 @@
     <string name="delete_torrent_desc">请选择是否同时删除已下载文件。</string>
 
     <string name="torrent_detail_not_found">未找到种子详情。</string>
+    <string name="detail_section_basic">基础信息</string>
+    <string name="detail_hash_label">种子哈希</string>
+    <string name="detail_magnet_label">磁力链接</string>
+    <string name="detail_export_torrent">导出种子</string>
+    <string name="detail_reannounce">重新汇报</string>
+    <string name="detail_recheck">重新校验</string>
+    <string name="detail_hash_copied">已复制种子哈希</string>
+    <string name="detail_magnet_copied">已复制磁力链接</string>
+    <string name="detail_tracker_copied">已复制 Tracker 链接</string>
+    <string name="detail_export_success">种子已导出</string>
+    <string name="detail_export_failed">种子导出失败</string>
     <string name="torrent_size_fmt">种子大小：%1$s</string>
     <string name="torrent_uploaded_downloaded_fmt">上传量：%1$s ｜ 下载量：%2$s</string>
     <string name="torrent_speed_fmt">上传速度：%1$s ｜ 下载速度：%2$s</string>
@@ -130,8 +134,6 @@
     <string name="torrent_peer_count_fmt">👤 用户数：%1$d（%2$d）</string>
     <string name="added_fmt">添加时间：%1$s</string>
     <string name="last_activity_fmt">最近活动：%1$s</string>
-    <string name="recent_activity_fmt">最近活跃 %1$s</string>
-
     <string name="cross_seed_detail_title">辅种明细</string>
     <string name="cross_seed_detail_source_fmt">当前种子：%1$s</string>
     <string name="cross_seed_detail_count_fmt">同组种子：%1$d</string>
@@ -182,7 +184,38 @@
     <string name="server_manage_title">服务器管理</string>
     <string name="no_saved_servers">暂无已保存服务器</string>
     <string name="add_server_title">新增服务器</string>
+    <string name="edit_server_title">编辑服务器</string>
+    <string name="server_switch_to_add">新增服务器</string>
+    <string name="server_save_action">保存</string>
     <string name="server_name_optional_label">服务器名称（可选）</string>
+    <string name="server_password_preserve_hint">留空则保持原密码</string>
+    <string name="server_profile_active">已连接</string>
+    <string name="server_profile_saved">已保存</string>
+    <string name="server_profile_tap_to_connect">点击切换</string>
+    <string name="server_delete_title">删除服务器</string>
+    <string name="server_delete_desc">确认删除服务器“%1$s”吗？</string>
+    <string name="server_delete_desc_active">确认删除当前已连接服务器“%1$s”吗？删除后将切换到其他服务器或断开连接。</string>
+    <string name="server_backend_repair_title">修正服务器类型</string>
+    <string name="server_backend_repair_desc">服务器“%1$s”看起来是 %2$s，是否将此服务器类型改为 %2$s 并重新连接？</string>
+    <string name="server_backend_repair_confirm">修正并重连</string>
+    <string name="server_summary_speed_fmt">↑ %1$s  ↓ %2$s</string>
+    <string name="dashboard_server_speed_title">全服务器速度</string>
+    <plurals name="dashboard_server_speed_online_count">
+        <item quantity="other">%1$d 台服务器</item>
+    </plurals>
+    <string name="server_stack_title">服务器卡片</string>
+    <string name="server_stack_subtitle">点击卡片查看该服务器详情</string>
+    <string name="server_stack_reorder_hint">长按卡片可调整顺序</string>
+    <string name="server_snapshot_live_state">在线</string>
+    <string name="server_snapshot_stale_state">离线缓存</string>
+    <string name="dashboard_swipe_hint">左滑总览卡可编辑或删除</string>
+    <string name="dashboard_chart_reorder_hint">长按图表卡调整顺序，可在图表管理中恢复隐藏卡片</string>
+    <string name="dashboard_manage_cards_title">图表管理</string>
+    <string name="dashboard_manage_cards_action">管理</string>
+    <string name="dashboard_manage_cards_reset">恢复默认</string>
+    <string name="dashboard_all_cards_hidden_title">图表已全部隐藏</string>
+    <string name="dashboard_all_cards_hidden_body">可以在图表管理中重新显示这些卡片。</string>
+    <string name="close">关闭</string>
 
     <string name="detail_section_name">名称</string>
     <string name="detail_new_name_label">新名称</string>
@@ -200,6 +233,30 @@
     <string name="detail_action_apply">应用</string>
     <string name="detail_section_ratio">分享比率</string>
     <string name="detail_ratio_label">比率</string>
+    <plurals name="detail_tracker_count">
+        <item quantity="other">%1$d 个 Tracker</item>
+    </plurals>
+    <string name="detail_show_passkey">显示 passkey</string>
+    <string name="detail_hide_passkey">隐藏 passkey</string>
+    <string name="detail_tracker_edit_title">编辑 Tracker</string>
+    <string name="detail_tracker_delete_title">删除 Tracker</string>
+    <string name="detail_tracker_delete_desc">确认删除这个 Tracker 吗？</string>
+    <string name="detail_tracker_url_label">Tracker 地址</string>
+    <string name="detail_peer_seeders_label">种子数</string>
+    <string name="detail_peer_seeders_value">%1$d（总做种 %2$d）</string>
+    <string name="detail_peer_leechers_label">用户数</string>
+    <string name="detail_peer_leechers_value">%1$d（总下载 %2$d）</string>
+    <string name="detail_peer_cross_seed_label">辅种数</string>
+    <string name="detail_peer_cross_seed_value">%1$d</string>
+    <string name="detail_peer_ratio_label">分享率</string>
+    <string name="detail_peer_activity_label">最近活跃</string>
+    <string name="detail_files_root">根目录</string>
+    <string name="detail_files_folder_chip">文件夹</string>
+    <string name="detail_files_file_chip">文件</string>
+    <plurals name="detail_files_folder_summary">
+        <item quantity="other">%1$d 个文件 · %2$s · %3$s</item>
+    </plurals>
+    <string name="detail_files_file_summary">%1$s · %2$s</string>
 
     <string name="loading">加载中…</string>
     <string name="no_tracker_info">暂无 Tracker 信息</string>

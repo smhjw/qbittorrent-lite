@@ -8,6 +8,7 @@ import com.hjw.qbremote.data.model.TorrentTracker
 import com.hjw.qbremote.data.model.TransferInfo
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
+import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.Field
 import retrofit2.http.FormUrlEncoded
@@ -65,6 +66,18 @@ interface QbApi {
         @Field("deleteFiles") deleteFiles: Boolean,
     ): Response<Unit>
 
+    @FormUrlEncoded
+    @POST("api/v2/torrents/reannounce")
+    suspend fun reannounceTorrents(
+        @Field("hashes") hashes: String,
+    ): Response<Unit>
+
+    @FormUrlEncoded
+    @POST("api/v2/torrents/recheck")
+    suspend fun recheckTorrents(
+        @Field("hashes") hashes: String,
+    ): Response<Unit>
+
     @GET("api/v2/torrents/properties")
     suspend fun torrentProperties(
         @Query("hash") hash: String,
@@ -79,6 +92,33 @@ interface QbApi {
     suspend fun torrentTrackers(
         @Query("hash") hash: String,
     ): List<TorrentTracker>
+
+    @FormUrlEncoded
+    @POST("api/v2/torrents/addTrackers")
+    suspend fun addTrackers(
+        @Field("hash") hash: String,
+        @Field("urls") urls: String,
+    ): Response<Unit>
+
+    @FormUrlEncoded
+    @POST("api/v2/torrents/editTracker")
+    suspend fun editTracker(
+        @Field("hash") hash: String,
+        @Field("origUrl") originalUrl: String,
+        @Field("newUrl") newUrl: String,
+    ): Response<Unit>
+
+    @FormUrlEncoded
+    @POST("api/v2/torrents/removeTrackers")
+    suspend fun removeTrackers(
+        @Field("hash") hash: String,
+        @Field("urls") urls: String,
+    ): Response<Unit>
+
+    @GET("api/v2/torrents/export")
+    suspend fun exportTorrent(
+        @Query("hash") hash: String,
+    ): Response<ResponseBody>
 
     @GET("api/v2/torrents/categories")
     suspend fun torrentCategories(): Map<String, TorrentCategory>

@@ -7,17 +7,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
@@ -33,16 +30,18 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.hjw.qbremote.R
 import com.hjw.qbremote.data.AppLanguage
-import com.hjw.qbremote.data.ChartSortMode
 import com.hjw.qbremote.data.ConnectionSettings
+import com.hjw.qbremote.data.ServerBackendType
 import com.hjw.qbremote.ui.theme.qbGlassCardColors
 import com.hjw.qbremote.ui.theme.qbGlassOutlineColor
-import com.hjw.qbremote.ui.theme.qbGlassStrongContainerColor
 
 @Composable
 internal fun SettingsPanelCard(
@@ -68,12 +67,6 @@ internal fun SettingsPanelCard(
 internal fun SettingsPageContent(
     settings: ConnectionSettings,
     onAppLanguageChange: (AppLanguage) -> Unit,
-    onShowSpeedTotalsChange: (Boolean) -> Unit,
-    onEnableServerGroupingChange: (Boolean) -> Unit,
-    onShowChartPanelChange: (Boolean) -> Unit,
-    onShowCountryFlowCardChange: (Boolean) -> Unit,
-    onShowUploadDistributionCardChange: (Boolean) -> Unit,
-    onShowCategoryDistributionCardChange: (Boolean) -> Unit,
     onDeleteFilesWhenNoSeedersChange: (Boolean) -> Unit,
     onDeleteFilesDefaultChange: (Boolean) -> Unit,
 ) {
@@ -128,36 +121,6 @@ internal fun SettingsPageContent(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            SettingSwitchRow(
-                title = stringResource(R.string.settings_show_speed_totals),
-                checked = settings.showSpeedTotals,
-                onCheckedChange = onShowSpeedTotalsChange,
-            )
-            SettingSwitchRow(
-                title = stringResource(R.string.settings_enable_server_grouping),
-                checked = settings.enableServerGrouping,
-                onCheckedChange = onEnableServerGroupingChange,
-            )
-            SettingSwitchRow(
-                title = stringResource(R.string.settings_show_chart_panel),
-                checked = settings.showChartPanel,
-                onCheckedChange = onShowChartPanelChange,
-            )
-            SettingSwitchRow(
-                title = stringResource(R.string.settings_show_country_flow_card),
-                checked = settings.showCountryFlowCard,
-                onCheckedChange = onShowCountryFlowCardChange,
-            )
-            SettingSwitchRow(
-                title = stringResource(R.string.settings_show_upload_distribution_card),
-                checked = settings.showUploadDistributionCard,
-                onCheckedChange = onShowUploadDistributionCardChange,
-            )
-            SettingSwitchRow(
-                title = stringResource(R.string.settings_show_category_distribution_card),
-                checked = settings.showCategoryDistributionCard,
-                onCheckedChange = onShowCategoryDistributionCardChange,
-            )
         }
         SettingsPanelCard {
             SettingSwitchRow(
@@ -177,6 +140,7 @@ internal fun SettingsPageContent(
 @Composable
 internal fun ConnectionCard(
     state: MainUiState,
+    onBackendTypeChange: (ServerBackendType) -> Unit,
     onHostChange: (String) -> Unit,
     onPortChange: (String) -> Unit,
     onHttpsChange: (Boolean) -> Unit,
@@ -185,6 +149,8 @@ internal fun ConnectionCard(
     onRefreshSecondsChange: (String) -> Unit,
     onConnect: () -> Unit,
 ) {
+    var passwordVisible by rememberSaveable { mutableStateOf(false) }
+
     OutlinedCard(
         modifier = Modifier.fillMaxWidth(),
         shape = PanelShape,
@@ -203,6 +169,44 @@ internal fun ConnectionCard(
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.SemiBold,
             )
+
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.connection_backend_label),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        ServerBackendType.QBITTORRENT to stringResource(R.string.backend_qbittorrent),
+                        ServerBackendType.TRANSMISSION to stringResource(R.string.backend_transmission),
+                    ).forEach { (backendType, label) ->
+                        TextButton(
+                            onClick = { onBackendTypeChange(backendType) },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = if (state.settings.serverBackendType == backendType) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            ),
+                            modifier = Modifier.background(
+                                color = if (state.settings.serverBackendType == backendType) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                } else {
+                                    MaterialTheme.colorScheme.surface.copy(alpha = 0.24f)
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                            ),
+                        ) {
+                            Text(label)
+                        }
+                    }
+                }
+            }
 
             OutlinedTextField(
                 modifier = Modifier.fillMaxWidth(),
@@ -255,7 +259,17 @@ internal fun ConnectionCard(
                 onValueChange = onPasswordChange,
                 singleLine = true,
                 label = { Text(stringResource(R.string.connection_password_label)) },
-                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                visualTransformation = if (passwordVisible) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                trailingIcon = {
+                    PasswordVisibilityTrailingIcon(
+                        passwordVisible = passwordVisible,
+                        onToggle = { passwordVisible = !passwordVisible },
+                    )
+                },
                 shape = RoundedCornerShape(14.dp),
             )
 
@@ -301,138 +315,28 @@ internal fun ConnectionCard(
 }
 
 @Composable
-internal fun SettingsDialog(
-    settings: ConnectionSettings,
-    onDismiss: () -> Unit,
-    onAppLanguageChange: (AppLanguage) -> Unit,
-    onShowSpeedTotalsChange: (Boolean) -> Unit,
-    onEnableServerGroupingChange: (Boolean) -> Unit,
-    onShowChartPanelChange: (Boolean) -> Unit,
-    onChartShowSiteNameChange: (Boolean) -> Unit,
-    onChartSortModeChange: (ChartSortMode) -> Unit,
-    onDeleteFilesWhenNoSeedersChange: (Boolean) -> Unit,
-    onDeleteFilesDefaultChange: (Boolean) -> Unit,
+internal fun PasswordVisibilityTrailingIcon(
+    passwordVisible: Boolean,
+    onToggle: () -> Unit,
 ) {
-    var showLanguageMenu by remember { mutableStateOf(false) }
-    var showChartSortMenu by remember { mutableStateOf(false) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        shape = PanelShape,
-        containerColor = qbGlassStrongContainerColor(),
-        title = { Text(stringResource(R.string.settings_title)) },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 520.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = stringResource(R.string.settings_language),
-                        modifier = Modifier.weight(1f),
-                    )
-                    Box {
-                        TextButton(onClick = { showLanguageMenu = true }) {
-                            Text(appLanguageLabel(settings.appLanguage))
-                        }
-                        DropdownMenu(
-                            expanded = showLanguageMenu,
-                            onDismissRequest = { showLanguageMenu = false },
-                        ) {
-                            AppLanguage.entries.forEach { language ->
-                                DropdownMenuItem(
-                                    text = { Text(appLanguageLabel(language)) },
-                                    onClick = {
-                                        onAppLanguageChange(language)
-                                        showLanguageMenu = false
-                                    },
-                                )
-                            }
-                        }
-                    }
+    val contentDescription = if (passwordVisible) {
+        stringResource(R.string.password_visibility_hide)
+    } else {
+        stringResource(R.string.password_visibility_show)
+    }
+    IconButton(onClick = onToggle) {
+        Icon(
+            painter = painterResource(
+                id = if (passwordVisible) {
+                    R.drawable.ic_password_visible
+                } else {
+                    R.drawable.ic_password_hidden
                 }
-                Text(
-                    text = stringResource(R.string.settings_language_apply_hint),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                SettingSwitchRow(
-                    title = stringResource(R.string.settings_show_speed_totals),
-                    checked = settings.showSpeedTotals,
-                    onCheckedChange = onShowSpeedTotalsChange,
-                )
-                SettingSwitchRow(
-                    title = stringResource(R.string.settings_enable_server_grouping),
-                    checked = settings.enableServerGrouping,
-                    onCheckedChange = onEnableServerGroupingChange,
-                )
-                SettingSwitchRow(
-                    title = stringResource(R.string.settings_show_chart_panel),
-                    checked = settings.showChartPanel,
-                    onCheckedChange = onShowChartPanelChange,
-                )
-                SettingSwitchRow(
-                    title = stringResource(R.string.settings_show_site_name),
-                    checked = settings.chartShowSiteName,
-                    onCheckedChange = onChartShowSiteNameChange,
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = stringResource(R.string.settings_chart_sort_mode),
-                        modifier = Modifier.weight(1f),
-                    )
-                    Box {
-                        TextButton(onClick = { showChartSortMenu = true }) {
-                            Text(chartSortModeLabel(settings.chartSortMode))
-                        }
-                        DropdownMenu(
-                            expanded = showChartSortMenu,
-                            onDismissRequest = { showChartSortMenu = false },
-                        ) {
-                            ChartSortMode.entries.forEach { mode ->
-                                DropdownMenuItem(
-                                    text = { Text(chartSortModeLabel(mode)) },
-                                    onClick = {
-                                        onChartSortModeChange(mode)
-                                        showChartSortMenu = false
-                                    },
-                                )
-                            }
-                        }
-                    }
-                }
-
-                HorizontalDivider()
-
-                SettingSwitchRow(
-                    title = stringResource(R.string.settings_delete_when_no_seeders),
-                    checked = settings.deleteFilesWhenNoSeeders,
-                    onCheckedChange = onDeleteFilesWhenNoSeedersChange,
-                )
-                SettingSwitchRow(
-                    title = stringResource(R.string.settings_delete_by_default),
-                    checked = settings.deleteFilesDefault,
-                    onCheckedChange = onDeleteFilesDefaultChange,
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.done))
-            }
-        },
-    )
+            ),
+            contentDescription = contentDescription,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable
@@ -453,16 +357,6 @@ internal fun SettingSwitchRow(
             checked = checked,
             onCheckedChange = onCheckedChange,
         )
-    }
-}
-
-@Composable
-internal fun chartSortModeLabel(mode: ChartSortMode): String {
-    return when (mode) {
-        ChartSortMode.TOTAL_SPEED -> stringResource(R.string.chart_sort_total_speed)
-        ChartSortMode.DOWNLOAD_SPEED -> stringResource(R.string.chart_sort_download_speed)
-        ChartSortMode.UPLOAD_SPEED -> stringResource(R.string.chart_sort_upload_speed)
-        ChartSortMode.TORRENT_COUNT -> stringResource(R.string.chart_sort_torrent_count)
     }
 }
 

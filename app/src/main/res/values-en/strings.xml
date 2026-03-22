@@ -1,13 +1,16 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">qbitremote</string>
+    <string name="app_name">TorrentRemote</string>
 
     <string name="menu_settings">Settings</string>
     <string name="menu_servers">Servers</string>
     <string name="menu_theme">Theme</string>
+    <string name="brand_qbittorrent">qBittorrent</string>
+    <string name="backend_qbittorrent">qBittorrent</string>
+    <string name="backend_transmission">Transmission</string>
     <string name="theme_dark">Dark Theme</string>
     <string name="theme_light">Light Theme</string>
-    <string name="theme_custom">Custom</string>
+    <string name="theme_custom_background">Custom Background</string>
     <string name="theme_custom_upload">Choose Image</string>
     <string name="theme_custom_replace">Choose Again</string>
     <string name="theme_custom_save_apply">Save and Apply</string>
@@ -19,15 +22,6 @@
     <string name="back">Back</string>
     <string name="go_to_settings">Go to settings</string>
 
-    <string name="settings_title">Settings</string>
-    <string name="settings_show_speed_totals">Show total upload/download</string>
-    <string name="settings_enable_server_grouping">Group by site</string>
-    <string name="settings_show_chart_panel">Show chart panel</string>
-    <string name="settings_show_country_flow_card">Show today\'s country upload card</string>
-    <string name="settings_show_upload_distribution_card">Show today\'s upload card</string>
-    <string name="settings_show_category_distribution_card">Show category share card</string>
-    <string name="settings_show_site_name">Show site name in chart</string>
-    <string name="settings_chart_sort_mode">Chart sort mode</string>
     <string name="settings_language">Language</string>
     <string name="settings_language_system">System</string>
     <string name="settings_language_zh_cn">Chinese (Simplified)</string>
@@ -36,16 +30,18 @@
     <string name="settings_language_apply_hint">Select a language, then tap "Save" to apply immediately</string>
     <string name="settings_delete_when_no_seeders">Preselect delete files when no seeders</string>
     <string name="settings_delete_by_default">Preselect delete files on delete</string>
-    <string name="done">Done</string>
 
-    <string name="connect_first_hint">Connect to a qBittorrent server first.</string>
+    <string name="connect_first_hint">Connect to a server first.</string>
     <string name="connection_title">Connection Settings</string>
+    <string name="connection_backend_label">Backend</string>
     <string name="connection_host_label">Host / IP</string>
     <string name="connection_host_hint">e.g. 192.168.1.12 or https://qb.example.com</string>
     <string name="connection_port_label">Port</string>
     <string name="connection_refresh_label">Refresh interval (sec)</string>
     <string name="connection_username_label">Username</string>
     <string name="connection_password_label">Password</string>
+    <string name="password_visibility_show">Show password</string>
+    <string name="password_visibility_hide">Hide password</string>
     <string name="connection_https_label">HTTPS</string>
     <string name="connect">Connect</string>
     <string name="connecting">Connecting…</string>
@@ -58,16 +54,7 @@
     <string name="global_total_up_fmt">Total upload: %1$s</string>
     <string name="server_version_fmt">Version %1$s</string>
 
-    <string name="chart_panel_title_fmt">Chart panel (%1$s)</string>
     <string name="chart_no_data">No chart data.</string>
-    <string name="chart_sort_total_speed">Total speed</string>
-    <string name="chart_sort_download_speed">Download speed</string>
-    <string name="chart_sort_upload_speed">Upload speed</string>
-    <string name="chart_sort_torrent_count">Torrent count</string>
-    <string name="chart_metric_total_fmt">Total speed: %1$s</string>
-    <string name="chart_metric_down_fmt">Download: %1$s</string>
-    <string name="chart_metric_up_fmt">Upload: %1$s</string>
-    <string name="chart_metric_torrents_fmt">Torrents: %1$d</string>
     <string name="chart_other_label">Other</string>
     <plurals name="chart_category_count">
         <item quantity="one">%1$d torrent</item>
@@ -77,12 +64,15 @@
     <string name="dashboard_daily_tag_upload_empty">No upload data yet for the current day.</string>
     <string name="dashboard_upload_title">Upload</string>
     <string name="dashboard_upload_title_with_date">Upload (%1$s)</string>
+    <string name="dashboard_tag_upload_share_title">Tag Upload Share</string>
+    <string name="dashboard_torrent_state_share_title">Torrent State Share</string>
+    <string name="dashboard_tracker_site_share_title">Tracker Site Share</string>
+    <string name="dashboard_tracker_site_unknown">Unknown site</string>
     <string name="dashboard_open_torrents">Torrents</string>
     <string name="dashboard_open_torrents_hint">Tap here</string>
-    <string name="dashboard_country_flow_title">Today\'s Upload Distribution (Est.)</string>
-    <string name="dashboard_country_flow_empty">No estimated country upload data for today.</string>
-    <string name="dashboard_country_hide_hint">Tip: double-tap the card header to hide it</string>
-    <string name="dashboard_country_hidden_snack">Hidden. You can re-enable it in Settings.</string>
+    <string name="dashboard_country_flow_title">Today\'s Observed Upload Distribution</string>
+    <string name="dashboard_country_flow_empty">No observable country upload data yet for today.</string>
+    <string name="dashboard_country_flow_note">Based only on observed peer upload deltas from active connections, so it may be lower than the actual full-day upload total.</string>
     <string name="dismiss_hint">Dismiss hint</string>
 
     <string name="status_uploading">Uploading</string>
@@ -90,6 +80,7 @@
     <string name="status_paused">Paused</string>
     <string name="status_error">Error</string>
     <string name="status_checking">Checking</string>
+    <string name="status_completed">Completed</string>
     <string name="status_waiting">Queued</string>
     <string name="status_total_torrents">Total</string>
 
@@ -113,6 +104,8 @@
     <string name="pause">Pause</string>
     <string name="resume">Resume</string>
     <string name="delete">Delete</string>
+    <string name="edit">Edit</string>
+    <string name="copy">Copy</string>
     <string name="hide">Hide</string>
     <string name="cancel">Cancel</string>
     <string name="delete_files">Delete files as well</string>
@@ -120,6 +113,17 @@
     <string name="delete_torrent_desc">Delete torrent and optionally local files.</string>
 
     <string name="torrent_detail_not_found">Torrent details not found.</string>
+    <string name="detail_section_basic">Basic Info</string>
+    <string name="detail_hash_label">Torrent Hash</string>
+    <string name="detail_magnet_label">Magnet Link</string>
+    <string name="detail_export_torrent">Export Torrent</string>
+    <string name="detail_reannounce">Reannounce</string>
+    <string name="detail_recheck">Recheck</string>
+    <string name="detail_hash_copied">Torrent hash copied</string>
+    <string name="detail_magnet_copied">Magnet link copied</string>
+    <string name="detail_tracker_copied">Tracker URL copied</string>
+    <string name="detail_export_success">Torrent exported</string>
+    <string name="detail_export_failed">Failed to export torrent</string>
     <string name="torrent_size_fmt">Size: %1$s</string>
     <string name="torrent_uploaded_downloaded_fmt">Uploaded: %1$s | Downloaded: %2$s</string>
     <string name="torrent_speed_fmt">Upload speed: %1$s | Download speed: %2$s</string>
@@ -131,8 +135,6 @@
     <string name="torrent_peer_count_fmt">Peers: %1$d (%2$d)</string>
     <string name="added_fmt">Added: %1$s</string>
     <string name="last_activity_fmt">Last active: %1$s</string>
-    <string name="recent_activity_fmt">Active %1$s ago</string>
-
     <string name="cross_seed_detail_title">Cross-seed details</string>
     <string name="cross_seed_detail_source_fmt">Source: %1$s</string>
     <string name="cross_seed_detail_count_fmt">In group: %1$d</string>
@@ -183,7 +185,39 @@
     <string name="server_manage_title">Server Management</string>
     <string name="no_saved_servers">No saved servers</string>
     <string name="add_server_title">Add server</string>
+    <string name="edit_server_title">Edit server</string>
+    <string name="server_switch_to_add">Add server</string>
+    <string name="server_save_action">Save</string>
     <string name="server_name_optional_label">Server name (optional)</string>
+    <string name="server_password_preserve_hint">Leave blank to keep the current password</string>
+    <string name="server_profile_active">Connected</string>
+    <string name="server_profile_saved">Saved</string>
+    <string name="server_profile_tap_to_connect">Tap to switch</string>
+    <string name="server_delete_title">Delete server</string>
+    <string name="server_delete_desc">Delete server "%1$s"?</string>
+    <string name="server_delete_desc_active">Delete the currently connected server "%1$s"? The app will switch to another server or disconnect.</string>
+    <string name="server_backend_repair_title">Fix Server Type</string>
+    <string name="server_backend_repair_desc">Server "%1$s" looks like %2$s. Change this server type to %2$s and reconnect?</string>
+    <string name="server_backend_repair_confirm">Fix and reconnect</string>
+    <string name="server_summary_speed_fmt">↑ %1$s  ↓ %2$s</string>
+    <string name="dashboard_server_speed_title">Server Speeds</string>
+    <plurals name="dashboard_server_speed_online_count">
+        <item quantity="one">%1$d server</item>
+        <item quantity="other">%1$d servers</item>
+    </plurals>
+    <string name="server_stack_title">Server Cards</string>
+    <string name="server_stack_subtitle">Tap a card to inspect that server</string>
+    <string name="server_stack_reorder_hint">Long-press a card to reorder it</string>
+    <string name="server_snapshot_live_state">Live</string>
+    <string name="server_snapshot_stale_state">Cached offline</string>
+    <string name="dashboard_swipe_hint">Swipe left on the overview card to edit or delete</string>
+    <string name="dashboard_chart_reorder_hint">Long-press chart cards to reorder them. Restore hidden cards in card management.</string>
+    <string name="dashboard_manage_cards_title">Card Management</string>
+    <string name="dashboard_manage_cards_action">Manage</string>
+    <string name="dashboard_manage_cards_reset">Reset default</string>
+    <string name="dashboard_all_cards_hidden_title">All chart cards are hidden</string>
+    <string name="dashboard_all_cards_hidden_body">Open card management to show them again.</string>
+    <string name="close">Close</string>
 
     <string name="detail_section_name">Name</string>
     <string name="detail_new_name_label">New name</string>
@@ -201,6 +235,32 @@
     <string name="detail_action_apply">Apply</string>
     <string name="detail_section_ratio">Share ratio</string>
     <string name="detail_ratio_label">Ratio</string>
+    <plurals name="detail_tracker_count">
+        <item quantity="one">%1$d tracker</item>
+        <item quantity="other">%1$d trackers</item>
+    </plurals>
+    <string name="detail_show_passkey">Show passkey</string>
+    <string name="detail_hide_passkey">Hide passkey</string>
+    <string name="detail_tracker_edit_title">Edit Tracker</string>
+    <string name="detail_tracker_delete_title">Delete Tracker</string>
+    <string name="detail_tracker_delete_desc">Delete this tracker?</string>
+    <string name="detail_tracker_url_label">Tracker URL</string>
+    <string name="detail_peer_seeders_label">Seeders</string>
+    <string name="detail_peer_seeders_value">%1$d (total seeds %2$d)</string>
+    <string name="detail_peer_leechers_label">Peers</string>
+    <string name="detail_peer_leechers_value">%1$d (total leechers %2$d)</string>
+    <string name="detail_peer_cross_seed_label">Cross-seeds</string>
+    <string name="detail_peer_cross_seed_value">%1$d</string>
+    <string name="detail_peer_ratio_label">Ratio</string>
+    <string name="detail_peer_activity_label">Recent activity</string>
+    <string name="detail_files_root">Root</string>
+    <string name="detail_files_folder_chip">Folder</string>
+    <string name="detail_files_file_chip">File</string>
+    <plurals name="detail_files_folder_summary">
+        <item quantity="one">%1$d file · %2$s · %3$s</item>
+        <item quantity="other">%1$d files · %2$s · %3$s</item>
+    </plurals>
+    <string name="detail_files_file_summary">%1$s · %2$s</string>
 
     <string name="loading">Loading…</string>
     <string name="no_tracker_info">No tracker info</string>

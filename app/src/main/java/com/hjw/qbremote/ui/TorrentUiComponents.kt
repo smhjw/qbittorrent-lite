@@ -18,10 +18,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,10 +39,18 @@ import com.hjw.qbremote.R
 import com.hjw.qbremote.data.model.TorrentInfo
 import com.hjw.qbremote.data.model.TorrentTracker
 import com.hjw.qbremote.ui.theme.qbGlassOutlineColor
+import com.hjw.qbremote.ui.theme.qbGlassStrongContainerColor
 import com.hjw.qbremote.ui.theme.qbGlassSubtleContainerColor
 
 @Composable
-internal fun TrackerInfoCard(tracker: TorrentTracker) {
+internal fun TrackerInfoCard(
+    tracker: TorrentTracker,
+    displayUrl: String = tracker.url.ifBlank { "-" },
+    allowMutation: Boolean = false,
+    onCopy: (() -> Unit)? = null,
+    onEdit: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
+) {
     val status = trackerStatusLabel(tracker.status)
     val statusColor = trackerStatusColor(tracker.status)
     val message = tracker.message.trim().ifBlank {
@@ -80,10 +90,10 @@ internal fun TrackerInfoCard(tracker: TorrentTracker) {
                 )
             }
             Text(
-                text = tracker.url.ifBlank { "-" },
+                text = displayUrl,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
@@ -96,7 +106,93 @@ internal fun TrackerInfoCard(tracker: TorrentTracker) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (onCopy != null || (allowMutation && (onEdit != null || onDelete != null))) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (onCopy != null) {
+                        TextButton(onClick = onCopy) {
+                            Text(stringResource(R.string.copy))
+                        }
+                    }
+                    if (allowMutation && onEdit != null) {
+                        TextButton(onClick = onEdit) {
+                            Text(stringResource(R.string.edit))
+                        }
+                    }
+                    if (allowMutation && onDelete != null) {
+                        TextButton(onClick = onDelete) {
+                            Text(
+                                text = stringResource(R.string.delete),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+@Composable
+internal fun TorrentUnifiedInfoPanel(
+    items: List<Pair<String, String>>,
+    modifier: Modifier = Modifier,
+) {
+    if (items.isEmpty()) return
+    OutlinedCard(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, qbGlassOutlineColor(defaultAlpha = 0.28f)),
+        colors = CardDefaults.outlinedCardColors(
+            containerColor = qbGlassStrongContainerColor(),
+        ),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            items.forEachIndexed { index, (label, value) ->
+                TorrentUnifiedInfoRow(
+                    label = label,
+                    value = value,
+                )
+                if (index < items.lastIndex) {
+                    HorizontalDivider(
+                        color = qbGlassOutlineColor(defaultAlpha = 0.18f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TorrentUnifiedInfoRow(
+    label: String,
+    value: String,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(0.42f),
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(0.58f),
+        )
     }
 }
 

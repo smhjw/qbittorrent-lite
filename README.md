@@ -1,81 +1,108 @@
-# TorrentRemote
+# qbitremote / TorrentRemote
 
-<p align="center">
-  <a href="README.zh-CN.md">简体中文</a> | <strong>English</strong>
-</p>
+`TorrentRemote` is an Android app for remotely managing both qBittorrent and Transmission servers.
 
-![Screenshot](Screenshot_20260315_191729_TorrentRemote.png)
-
-TorrentRemote is an Android app for remotely managing qBittorrent and Transmission.
+`TorrentRemote` 是一个 Android 远程管理工具，支持同时连接和管理 qBittorrent 与 Transmission 服务器。
 
 ## Highlights
 
-- Connect via host/IP or full `http(s)://` URL
-- Save and switch between multiple servers (qBittorrent + Transmission)
-- Home server card stack with quick server entry
-- Dashboard stats for speeds, totals, and status counts
-- Search and sort torrents, with detail tabs and actions
-- Add torrents from magnet links, URLs, or `.torrent` files
-- Light/dark theme and Chinese/English UI
+- Multi-server profiles with fast switching
+- Home dashboard with realtime upload/download speed chart
+- Server dashboard with independent cached snapshots
+- Unified torrent list with search, sorting, and cross-seed hints
+- Torrent detail tabs for info, trackers, peers, and files
+- Tracker copy, edit, delete, and passkey masking controls
+- Reannounce, recheck, per-torrent limits, ratio, category, and tag operations
+- Light / dark / custom theme support with Chinese and English localization
 
-## Project Info
+## Current Release
 
 - App name: `TorrentRemote`
 - Application ID: `com.hjw.qbremote`
-- Version: `0.1.8` (`versionCode = 8`)
+- Version: `0.1.10`
+- Version code: `11`
 - Min SDK: `26`
 - Target / Compile SDK: `35`
 
-## Download
+## Supported Backends
 
-- Latest APK: `torrentremote 0.1.8.apk`
-- Release page: https://github.com/smhjw/qbitremote/releases/tag/v0.1.8
+- qBittorrent WebUI API
+- Transmission RPC
 
-## Build (Using Local Toolchain in `tools/`)
+## Main Features
 
-This project can be built with the bundled toolchain under:
+### 1. Connection and Profiles
 
-- `tools/android-build/tools/jdk17`
-- `tools/android-build/tools/android-sdk`
+- Connect with host/IP or full `http(s)://` URL
+- Save multiple server profiles and switch quickly
+- Per-profile refresh interval and encrypted credential storage
 
-PowerShell example:
+### 2. Dashboard
+
+- Aggregate home view across multiple servers
+- Realtime speed curve for total upload/download traffic
+- Per-server dashboard snapshots with chart cards
+- Country, category, tag, tracker-site, and state distribution views
+
+### 3. Torrent List
+
+- Unified list with search and multiple sort modes
+- Stable return-to-selected-item behavior after leaving detail view
+- Double-tap top area to jump back to top
+
+### 4. Torrent Detail
+
+- Tabs: Info / Server / Peers / Files
+- Reannounce and recheck actions
+- Tracker management with copy, edit, delete, and passkey show/hide
+- Unified peer summary card
+- File tree browsing with folder-first navigation
+- Rename, move, category/tag updates, share ratio, and per-torrent speed limits
+
+### 5. UX and Reliability
+
+- Better server-switch isolation to avoid stale page residue
+- Cached state restore when returning from background
+- Adaptive launcher icon and Google Play assets
+- Chinese / English UI
+
+## Build With Bundled Toolchain
+
+This repository includes a local Android toolchain under `tools/android-build/`.
+
+Debug build:
 
 ```powershell
-$env:JAVA_HOME="D:\hjw\codex\qb-remote-android\tools\android-build\tools\jdk17"
-$env:ANDROID_HOME="D:\hjw\codex\qb-remote-android\tools\android-build\tools\android-sdk"
-$env:ANDROID_SDK_ROOT=$env:ANDROID_HOME
-$env:PATH="$env:JAVA_HOME\bin;$env:ANDROID_HOME\platform-tools;$env:PATH"
-
 .\gradlew.bat assembleDebug
 ```
 
-APK output:
-
-- `app/build/outputs/apk/debug/app-debug.apk`
-
-Release AAB for Google Play:
-
-1. Copy `keystore.properties.example` to `keystore.properties` and fill your signing values.
-2. Set `RELEASE_KEY_SHA256` to your upload key certificate fingerprint (recommended).
-3. Build:
-
-```powershell
-.\gradlew.bat bundleRelease
-```
-
-Output:
-
-- `app/build/outputs/bundle/release/app-release.aab`
-
-Quick script:
+Google Play release AAB with the fixed signing key:
 
 ```powershell
 .\scripts\build-release-aab.ps1
 ```
 
+Signed release APK:
+
+```powershell
+.\gradlew.bat assembleRelease
+```
+
+Key outputs:
+
+- Debug APK: `app/build/outputs/apk/debug/app-debug.apk`
+- Release APK: `app/build/outputs/apk/release/app-release.apk`
+- Release AAB: `app/build/outputs/bundle/release/app-release.aab`
+
+## Google Play Assets
+
+- 512 icon PNG: `play-assets/icon/qbitremote-play-icon-512.png`
+- 1024 source PNG: `play-assets/icon/qbitremote-play-icon-1024.png`
+
 ## Google Play Docs
 
 - [Google Play Release Checklist (zh-CN)](docs/google-play/PLAY_RELEASE_CHECKLIST.zh-CN.md)
-- [Data Safety Guide (zh-CN)](docs/google-play/DATA_SAFETY_GUIDE.zh-CN.md)
-- [Privacy Policy (EN)](docs/google-play/PRIVACY_POLICY.md)
-- [Privacy Policy (zh-CN)](docs/google-play/PRIVACY_POLICY.zh-CN.md)
+
+## License
+
+See [LICENSE](LICENSE).

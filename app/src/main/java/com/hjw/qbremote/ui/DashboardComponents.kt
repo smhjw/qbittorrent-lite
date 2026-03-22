@@ -7,15 +7,18 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -31,18 +34,22 @@ import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -58,21 +65,26 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.hjw.qbremote.R
+import com.hjw.qbremote.data.HomeAggregateSpeedHistorySnapshot
+import com.hjw.qbremote.data.HomeSpeedHistoryPoint
 import com.hjw.qbremote.data.model.CountryUploadRecord
 import com.hjw.qbremote.data.model.TorrentInfo
 import com.hjw.qbremote.ui.theme.qbGlassCardColors
 import com.hjw.qbremote.ui.theme.qbGlassEmptyStateColor
 import com.hjw.qbremote.ui.theme.qbGlassHoleColor
 import com.hjw.qbremote.ui.theme.qbGlassOutlineColor
+import java.time.Instant
+import java.time.ZoneId
 import java.util.Locale
-import kotlinx.coroutines.delay
 
 @Composable
 fun CategorySharePieCard(
     torrents: List<TorrentInfo>,
+    coverageNote: String = "",
+    showHideButton: Boolean,
+    onRevealHide: () -> Unit,
     onHide: () -> Unit,
 ) {
-    var showHideButton by rememberSaveable { mutableStateOf(false) }
     val noCategoryLabel = stringResource(R.string.no_category)
     val otherLabel = stringResource(R.string.chart_other_label)
     val entries = remember(torrents, noCategoryLabel, otherLabel) {
@@ -97,12 +109,6 @@ fun CategorySharePieCard(
         )
     }
 
-    LaunchedEffect(showHideButton) {
-        if (!showHideButton) return@LaunchedEffect
-        delay(5_000)
-        showHideButton = false
-    }
-
     OutlinedCard(
         modifier = Modifier.fillMaxWidth(),
         shape = PanelShape,
@@ -118,11 +124,8 @@ fun CategorySharePieCard(
             DashboardCardHeader(
                 title = stringResource(R.string.dashboard_category_share_title),
                 showHideButton = showHideButton,
-                onRevealHide = { showHideButton = true },
-                onHide = {
-                    showHideButton = false
-                    onHide()
-                },
+                onRevealHide = onRevealHide,
+                onHide = onHide,
             )
 
             if (entries.isEmpty()) {
@@ -146,7 +149,7 @@ fun CategorySharePieCard(
                 )
 
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                     horizontalAlignment = Alignment.End,
                 ) {
@@ -162,6 +165,13 @@ fun CategorySharePieCard(
                     }
                 }
             }
+            if (coverageNote.isNotBlank()) {
+                Text(
+                    text = coverageNote,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -169,19 +179,15 @@ fun CategorySharePieCard(
 @Composable
 fun CountryFlowMapCard(
     stats: List<CountryUploadRecord>,
+    coverageNote: String = "",
+    showHideButton: Boolean,
+    onRevealHide: () -> Unit,
     onHide: () -> Unit,
 ) {
-    var showHideButton by rememberSaveable { mutableStateOf(false) }
     val locale = LocalContext.current.resources.configuration.locales[0] ?: Locale.getDefault()
     val displayStats = remember(stats) { mergeCountryUploadRecordsForDisplay(stats) }
     val topCountries = remember(displayStats) { displayStats.take(3) }
     val emptyText = stringResource(R.string.dashboard_country_flow_empty)
-
-    LaunchedEffect(showHideButton) {
-        if (!showHideButton) return@LaunchedEffect
-        delay(5_000)
-        showHideButton = false
-    }
 
     OutlinedCard(
         modifier = Modifier.fillMaxWidth(),
@@ -198,11 +204,8 @@ fun CountryFlowMapCard(
             DashboardCardHeader(
                 title = stringResource(R.string.dashboard_country_flow_title),
                 showHideButton = showHideButton,
-                onRevealHide = { showHideButton = true },
-                onHide = {
-                    showHideButton = false
-                    onHide()
-                },
+                onRevealHide = onRevealHide,
+                onHide = onHide,
             )
 
             Box(
@@ -253,6 +256,19 @@ fun CountryFlowMapCard(
                     }
                 }
             }
+
+            Text(
+                text = stringResource(R.string.dashboard_country_flow_note),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (coverageNote.isNotBlank()) {
+                Text(
+                    text = coverageNote,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -261,9 +277,11 @@ fun CountryFlowMapCard(
 fun DailyTagUploadPieCard(
     date: String,
     stats: List<DailyTagUploadStat>,
+    titleOverride: String? = null,
+    showHideButton: Boolean,
+    onRevealHide: () -> Unit,
     onHide: () -> Unit,
 ) {
-    var showHideButton by rememberSaveable { mutableStateOf(false) }
     val noTagLabel = stringResource(R.string.no_tags)
     val otherLabel = stringResource(R.string.chart_other_label)
     val rawEntries = remember(stats, noTagLabel) {
@@ -290,12 +308,6 @@ fun DailyTagUploadPieCard(
     }
     val totalUploaded = entries.sumOf { it.value }
 
-    LaunchedEffect(showHideButton) {
-        if (!showHideButton) return@LaunchedEffect
-        delay(5_000)
-        showHideButton = false
-    }
-
     OutlinedCard(
         modifier = Modifier.fillMaxWidth(),
         shape = PanelShape,
@@ -309,17 +321,14 @@ fun DailyTagUploadPieCard(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             DashboardCardHeader(
-                title = if (date.isNotBlank()) {
+                title = titleOverride ?: if (date.isNotBlank()) {
                     stringResource(R.string.dashboard_upload_title_with_date, date)
                 } else {
                     stringResource(R.string.dashboard_upload_title)
                 },
                 showHideButton = showHideButton,
-                onRevealHide = { showHideButton = true },
-                onHide = {
-                    showHideButton = false
-                    onHide()
-                },
+                onRevealHide = onRevealHide,
+                onHide = onHide,
             )
 
             if (entries.isEmpty()) {
@@ -343,7 +352,7 @@ fun DailyTagUploadPieCard(
                 )
 
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                     horizontalAlignment = Alignment.End,
                 ) {
@@ -364,30 +373,562 @@ fun DailyTagUploadPieCard(
 }
 
 @Composable
+fun InlineRealtimeSpeedChart(
+    aggregate: DashboardAggregateState,
+    modifier: Modifier = Modifier,
+) {
+    val axisValues = remember(aggregate.realtimeSpeedSeries, aggregate.transferInfo) {
+        buildRealtimeAxisValues(
+            values = buildList {
+                add(aggregate.transferInfo.uploadSpeed.coerceAtLeast(0L))
+                add(aggregate.transferInfo.downloadSpeed.coerceAtLeast(0L))
+                aggregate.realtimeSpeedSeries.forEach { point ->
+                    add(point.uploadSpeed.coerceAtLeast(0L))
+                    add(point.downloadSpeed.coerceAtLeast(0L))
+                }
+            },
+        )
+    }
+    if (aggregate.realtimeSpeedSeries.size < 2) return
+    RealtimeSpeedChart(
+        modifier = modifier,
+        points = aggregate.realtimeSpeedSeries,
+        axisValues = axisValues,
+        uploadColor = Color(0xFFFF4B8B),
+        downloadColor = Color(0xFF5E7CFF),
+    )
+}
+
+@Composable
+private fun RealtimeSpeedChart(
+    modifier: Modifier = Modifier,
+    points: List<RealtimeSpeedPoint>,
+    axisValues: List<Long>,
+    uploadColor: Color,
+    downloadColor: Color,
+) {
+    val chartHeight = 168.dp
+    val downloadValues = remember(points) { points.map { it.downloadSpeed.coerceAtLeast(0L) } }
+    val uploadValues = remember(points) { points.map { it.uploadSpeed.coerceAtLeast(0L) } }
+    val gridColor = qbGlassOutlineColor(defaultAlpha = 0.14f)
+    val baselineColor = qbGlassOutlineColor(defaultAlpha = 0.18f)
+
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Column(
+            modifier = Modifier
+                .width(60.dp)
+                .height(chartHeight)
+                .padding(top = 2.dp, end = 6.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+            horizontalAlignment = Alignment.End,
+        ) {
+            axisValues.forEach { axisValue ->
+                Text(
+                    text = formatSpeed(axisValue),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.End,
+                    maxLines = 1,
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(chartHeight)
+                .background(
+                    color = qbGlassHoleColor(),
+                    shape = RoundedCornerShape(18.dp),
+                )
+                .border(
+                    width = 1.dp,
+                    color = qbGlassOutlineColor(defaultAlpha = 0.18f),
+                    shape = RoundedCornerShape(18.dp),
+                )
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val safeAxisMax = axisValues.firstOrNull()?.coerceAtLeast(1L)?.toFloat() ?: 1f
+                val dashEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                    intervals = floatArrayOf(12f, 10f),
+                    phase = 0f,
+                )
+
+                for (index in 0..3) {
+                    val y = size.height * (index / 3f)
+                    drawLine(
+                        color = if (index == 3) baselineColor else gridColor,
+                        start = Offset(0f, y),
+                        end = Offset(size.width, y),
+                        strokeWidth = 1.dp.toPx(),
+                        pathEffect = if (index == 3) null else dashEffect,
+                    )
+                }
+
+                drawRealtimeSeriesLine(
+                    values = downloadValues,
+                    color = downloadColor,
+                    axisMax = safeAxisMax,
+                )
+                drawRealtimeSeriesLine(
+                    values = uploadValues,
+                    color = uploadColor,
+                    axisMax = safeAxisMax,
+                )
+            }
+        }
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawRealtimeSeriesLine(
+    values: List<Long>,
+    color: Color,
+    axisMax: Float,
+) {
+    if (values.size < 2) return
+    val stepX = if (values.lastIndex <= 0) 0f else size.width / values.lastIndex.toFloat()
+    val points = values.mapIndexed { index, rawValue ->
+        val x = stepX * index
+        val normalized = (rawValue.coerceAtLeast(0L).toFloat() / axisMax).coerceIn(0f, 1f)
+        val y = size.height - (size.height * normalized)
+        Offset(x, y.coerceIn(0f, size.height))
+    }
+    val path = Path().apply {
+        moveTo(points.first().x, points.first().y)
+        for (index in 0 until points.lastIndex) {
+            val previous = points.getOrElse(index - 1) { points[index] }
+            val current = points[index]
+            val next = points[index + 1]
+            val afterNext = points.getOrElse(index + 2) { next }
+            val control1 = Offset(
+                x = current.x + (next.x - previous.x) / 6f,
+                y = (current.y + (next.y - previous.y) / 6f).coerceIn(0f, size.height),
+            )
+            val control2 = Offset(
+                x = next.x - (afterNext.x - current.x) / 6f,
+                y = (next.y - (afterNext.y - current.y) / 6f).coerceIn(0f, size.height),
+            )
+            cubicTo(
+                control1.x,
+                control1.y,
+                control2.x,
+                control2.y,
+                next.x,
+                next.y,
+            )
+        }
+    }
+    drawPath(
+        path = path,
+        color = color,
+        style = Stroke(width = 2.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+    )
+}
+
+private fun buildRealtimeAxisValues(values: List<Long>): List<Long> {
+    val axisMax = roundRealtimeAxisMax(values.maxOrNull()?.coerceAtLeast(1L) ?: 1L)
+    return listOf(
+        axisMax,
+        (axisMax * 2L) / 3L,
+        axisMax / 3L,
+        0L,
+    )
+}
+
+private fun roundRealtimeAxisMax(value: Long): Long {
+    if (value <= 1L) return 1L
+    var magnitude = 1L
+    while (magnitude <= Long.MAX_VALUE / 10L && magnitude * 10L < value) {
+        magnitude *= 10L
+    }
+    val normalized = value.toDouble() / magnitude.toDouble()
+    val rounded = when {
+        normalized <= 1.0 -> 1L
+        normalized <= 2.0 -> 2L
+        normalized <= 5.0 -> 5L
+        else -> 10L
+    }
+    return rounded * magnitude
+}
+
+@Composable
+fun TransmissionLabelCategoryPieCard(
+    torrents: List<TorrentInfo>,
+    showHideButton: Boolean,
+    onRevealHide: () -> Unit,
+    onHide: () -> Unit,
+) {
+    val noTagLabel = stringResource(R.string.no_tags)
+    val otherLabel = stringResource(R.string.chart_other_label)
+    val entries = remember(torrents, noTagLabel, otherLabel) {
+        collapsePieEntries(
+            entries = buildTransmissionLabelShareEntries(
+                torrents = torrents,
+                noTagLabel = noTagLabel,
+            ),
+            maxEntries = 7,
+            otherLabel = otherLabel,
+        )
+    }.map { (label, count) ->
+        val torrentCount = count.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        PieLegendEntry(
+            label = label,
+            value = count,
+            valueText = pluralStringResource(
+                R.plurals.chart_category_count,
+                torrentCount,
+                torrentCount,
+            ),
+        )
+    }
+
+    OutlinedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = PanelShape,
+        border = BorderStroke(1.dp, qbGlassOutlineColor()),
+        colors = qbGlassCardColors(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 13.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            DashboardCardHeader(
+                title = stringResource(R.string.dashboard_category_share_title),
+                showHideButton = showHideButton,
+                onRevealHide = onRevealHide,
+                onHide = onHide,
+            )
+
+            if (entries.isEmpty()) {
+                DashboardChartEmptyState(
+                    text = stringResource(R.string.chart_no_data),
+                )
+                return@Column
+            }
+
+            val total = entries.sumOf { it.value }.coerceAtLeast(1L)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                DashboardPieChart(
+                    entries = entries,
+                    total = total,
+                    holeColor = qbGlassHoleColor(),
+                    modifier = Modifier.size(142.dp),
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    entries.forEachIndexed { index, entry ->
+                        val color = DashboardPiePalette[index % DashboardPiePalette.size]
+                        val share = entry.value.toFloat() / total.toFloat()
+                        CategoryLegendRow(
+                            color = color,
+                            label = entry.label,
+                            shareText = formatPercent(share),
+                            valueText = entry.valueText,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private enum class TransmissionStateGroup {
+    UPLOADING,
+    DOWNLOADING,
+    PAUSED,
+    QUEUED,
+    CHECKING,
+    COMPLETED,
+    ERROR,
+    UNKNOWN,
+}
+
+@Composable
+fun TransmissionStatePieCard(
+    torrents: List<TorrentInfo>,
+    showHideButton: Boolean,
+    onRevealHide: () -> Unit,
+    onHide: () -> Unit,
+) {
+    val uploadingLabel = stringResource(R.string.status_uploading)
+    val downloadingLabel = stringResource(R.string.status_downloading)
+    val pausedLabel = stringResource(R.string.status_paused)
+    val queuedLabel = stringResource(R.string.state_queued)
+    val checkingLabel = stringResource(R.string.status_checking)
+    val completedLabel = stringResource(R.string.status_completed)
+    val errorLabel = stringResource(R.string.status_error)
+    val unknownLabel = stringResource(R.string.state_unknown)
+    val otherLabel = stringResource(R.string.chart_other_label)
+    val rawEntries = remember(
+        torrents,
+        uploadingLabel,
+        downloadingLabel,
+        pausedLabel,
+        queuedLabel,
+        checkingLabel,
+        completedLabel,
+        errorLabel,
+        unknownLabel,
+    ) {
+        val grouped = torrents.groupingBy(::transmissionStateGroupOf).eachCount()
+        listOf(
+            uploadingLabel to grouped[TransmissionStateGroup.UPLOADING],
+            downloadingLabel to grouped[TransmissionStateGroup.DOWNLOADING],
+            pausedLabel to grouped[TransmissionStateGroup.PAUSED],
+            queuedLabel to grouped[TransmissionStateGroup.QUEUED],
+            checkingLabel to grouped[TransmissionStateGroup.CHECKING],
+            completedLabel to grouped[TransmissionStateGroup.COMPLETED],
+            errorLabel to grouped[TransmissionStateGroup.ERROR],
+            unknownLabel to grouped[TransmissionStateGroup.UNKNOWN],
+        ).mapNotNull { (label, count) ->
+            count?.takeIf { it > 0 }?.let { label to it.toLong() }
+        }
+    }
+    val collapsed = remember(rawEntries, otherLabel) {
+        collapsePieEntries(
+            entries = rawEntries,
+            maxEntries = 7,
+            otherLabel = otherLabel,
+        )
+    }
+    val entries = collapsed.map { (label, count) ->
+        val torrentCount = count.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        PieLegendEntry(
+            label = label,
+            value = count,
+            valueText = pluralStringResource(
+                R.plurals.chart_category_count,
+                torrentCount,
+                torrentCount,
+            ),
+        )
+    }
+
+    OutlinedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = PanelShape,
+        border = BorderStroke(1.dp, qbGlassOutlineColor()),
+        colors = qbGlassCardColors(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 13.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            DashboardCardHeader(
+                title = stringResource(R.string.dashboard_torrent_state_share_title),
+                showHideButton = showHideButton,
+                onRevealHide = onRevealHide,
+                onHide = onHide,
+            )
+
+            if (entries.isEmpty()) {
+                DashboardInlineEmptyState(text = stringResource(R.string.chart_no_data))
+                return@Column
+            }
+
+            val total = entries.sumOf { it.value }.coerceAtLeast(1L)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                DashboardPieChart(
+                    entries = entries,
+                    total = total,
+                    holeColor = qbGlassHoleColor(),
+                    modifier = Modifier.size(132.dp),
+                )
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalAlignment = Alignment.End,
+                ) {
+                    entries.forEachIndexed { index, entry ->
+                        val color = DashboardPiePalette[index % DashboardPiePalette.size]
+                        val share = (entry.value.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                        DailyUploadLegendRow(
+                            color = color,
+                            label = entry.label,
+                            shareText = formatPercent(share),
+                            valueText = entry.valueText,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TransmissionTrackerSitePieCard(
+    torrents: List<TorrentInfo>,
+    showHideButton: Boolean,
+    onRevealHide: () -> Unit,
+    onHide: () -> Unit,
+) {
+    val unknownSiteLabel = stringResource(R.string.dashboard_tracker_site_unknown)
+    val otherLabel = stringResource(R.string.chart_other_label)
+    val rawEntries = remember(torrents, unknownSiteLabel) {
+        torrents
+            .groupingBy { torrent -> transmissionTrackerSiteLabel(torrent.tracker, unknownSiteLabel) }
+            .eachCount()
+            .mapNotNull { (site, count) ->
+                count.takeIf { it > 0 }?.let { site to it.toLong() }
+            }
+    }
+    val collapsed = remember(rawEntries, otherLabel) {
+        collapsePieEntries(
+            entries = rawEntries,
+            maxEntries = 7,
+            otherLabel = otherLabel,
+        )
+    }
+    val entries = collapsed.map { (label, count) ->
+        val torrentCount = count.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        PieLegendEntry(
+            label = label,
+            value = count,
+            valueText = pluralStringResource(
+                R.plurals.chart_category_count,
+                torrentCount,
+                torrentCount,
+            ),
+        )
+    }
+
+    OutlinedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = PanelShape,
+        border = BorderStroke(1.dp, qbGlassOutlineColor()),
+        colors = qbGlassCardColors(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 13.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            DashboardCardHeader(
+                title = stringResource(R.string.dashboard_tracker_site_share_title),
+                showHideButton = showHideButton,
+                onRevealHide = onRevealHide,
+                onHide = onHide,
+            )
+
+            if (entries.isEmpty()) {
+                DashboardInlineEmptyState(text = stringResource(R.string.chart_no_data))
+                return@Column
+            }
+
+            val total = entries.sumOf { it.value }.coerceAtLeast(1L)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                DashboardPieChart(
+                    entries = entries,
+                    total = total,
+                    holeColor = qbGlassHoleColor(),
+                    modifier = Modifier.size(132.dp),
+                )
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalAlignment = Alignment.End,
+                ) {
+                    entries.forEachIndexed { index, entry ->
+                        val color = DashboardPiePalette[index % DashboardPiePalette.size]
+                        val share = (entry.value.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                        DailyUploadLegendRow(
+                            color = color,
+                            label = entry.label,
+                            shareText = formatPercent(share),
+                            valueText = entry.valueText,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun transmissionStateGroupOf(torrent: TorrentInfo): TransmissionStateGroup {
+    val state = normalizeTorrentState(effectiveTorrentState(torrent))
+    return when {
+        state in setOf("uploading", "forcedup") -> TransmissionStateGroup.UPLOADING
+        state == "stalledup" || (torrent.progress >= 1f && state in setOf("pausedup", "stoppedup")) ->
+            TransmissionStateGroup.COMPLETED
+        state in setOf("downloading", "forceddl", "stalleddl", "metadl", "forcedmetadl", "allocating", "moving") ->
+            TransmissionStateGroup.DOWNLOADING
+        state in setOf("checkingdl", "checkingup", "checkingresumedata") ->
+            TransmissionStateGroup.CHECKING
+        state in setOf("queueddl", "queuedup") -> TransmissionStateGroup.QUEUED
+        state in setOf("pauseddl", "pausedup", "stoppeddl", "stoppedup") ->
+            if (torrent.progress >= 1f) TransmissionStateGroup.COMPLETED else TransmissionStateGroup.PAUSED
+        state in setOf("error", "missingfiles") -> TransmissionStateGroup.ERROR
+        torrent.progress >= 1f -> TransmissionStateGroup.COMPLETED
+        else -> TransmissionStateGroup.UNKNOWN
+    }
+}
+
+private fun transmissionTrackerSiteLabel(
+    trackerUrl: String,
+    unknownLabel: String,
+): String {
+    return formatTrackerSiteName(trackerUrl, unknownLabel)
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
 fun DashboardCardHeader(
     title: String,
     showHideButton: Boolean,
     onRevealHide: () -> Unit,
     onHide: () -> Unit,
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
     Row(
         modifier = Modifier
-            .fillMaxWidth()
-            .pointerInput(Unit) {
-                detectTapGestures(onDoubleTap = { onRevealHide() })
-            },
+            .fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        Text(
-            text = title,
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.titleSmall.copy(fontSize = 15.sp),
-            color = MaterialTheme.colorScheme.onSurface,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .combinedClickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = {},
+                    onDoubleClick = onRevealHide,
+                ),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall.copy(fontSize = 15.sp),
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         if (showHideButton) {
             TextButton(
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
@@ -404,6 +945,7 @@ fun DashboardCardHeader(
 @Composable
 fun ReorderableDashboardCard(
     card: DashboardChartCard,
+    gestureKey: Any,
     isDragging: Boolean,
     dragOffsetY: Float,
     siblingOffsetY: Float,
@@ -414,33 +956,46 @@ fun ReorderableDashboardCard(
     content: @Composable () -> Unit,
 ) {
     val draggedScale by animateFloatAsState(
-        targetValue = if (isDragging) 1.012f else 1f,
+        targetValue = if (isDragging) ReorderDraggedScale else 1f,
         animationSpec = spring(
-            dampingRatio = 0.86f,
-            stiffness = 560f,
+            dampingRatio = 0.84f,
+            stiffness = 520f,
         ),
         label = "dashboardDraggedScale",
     )
+    val animatedSiblingOffset by animateFloatAsState(
+        targetValue = siblingOffsetY,
+        animationSpec = spring(
+            dampingRatio = 0.84f,
+            stiffness = 520f,
+        ),
+        label = "dashboardSiblingOffset",
+    )
+    val latestOnDragStart by rememberUpdatedState(onDragStart)
+    val latestOnDragDelta by rememberUpdatedState(onDragDelta)
+    val latestOnDragEnd by rememberUpdatedState(onDragEnd)
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .onSizeChanged { onMeasured(it.height) }
             .zIndex(if (isDragging) 1f else 0f)
             .graphicsLayer {
-                translationY = if (isDragging) dragOffsetY else siblingOffsetY
-                shadowElevation = if (isDragging) 12f else 0f
+                translationY = if (isDragging) dragOffsetY else animatedSiblingOffset
+                shadowElevation = if (isDragging) ReorderDraggedShadow else 0f
                 scaleX = draggedScale
                 scaleY = draggedScale
                 alpha = 1f
+                shape = PanelShape
+                clip = true
             }
-            .pointerInput(card) {
+            .pointerInput(card, gestureKey) {
                 detectDragGesturesAfterLongPress(
-                    onDragStart = { onDragStart() },
-                    onDragEnd = { onDragEnd() },
-                    onDragCancel = { onDragEnd() },
+                    onDragStart = { latestOnDragStart() },
+                    onDragEnd = { latestOnDragEnd() },
+                    onDragCancel = { latestOnDragEnd() },
                     onDrag = { change, dragAmount ->
                         change.consume()
-                        onDragDelta(dragAmount.y)
+                        latestOnDragDelta(dragAmount.y)
                     },
                 )
             },
@@ -748,7 +1303,7 @@ fun DashboardLegendRow(
     shareColor: Color,
 ) {
     Row(
-        modifier = Modifier.widthIn(min = 204.dp, max = 216.dp),
+        modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(7.dp),
         verticalAlignment = Alignment.Top,
     ) {
@@ -761,7 +1316,7 @@ fun DashboardLegendRow(
         Column(
             modifier = Modifier
                 .padding(start = 6.dp)
-                .width(116.dp),
+                .weight(1f),
             verticalArrangement = Arrangement.spacedBy(1.dp),
         ) {
             Text(
@@ -781,7 +1336,7 @@ fun DashboardLegendRow(
         }
         Text(
             text = shareText,
-            modifier = Modifier.width(52.dp),
+            modifier = Modifier.widthIn(min = 64.dp),
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Medium,
             color = shareColor,
@@ -803,6 +1358,30 @@ fun buildCategoryShareEntries(
             noCategoryText = noCategoryLabel,
         )
         grouped[label] = (grouped[label] ?: 0L) + 1L
+    }
+    return grouped.entries
+        .sortedByDescending { it.value }
+        .map { it.key to it.value }
+}
+
+fun buildTransmissionLabelShareEntries(
+    torrents: List<TorrentInfo>,
+    noTagLabel: String,
+): List<Pair<String, Long>> {
+    val grouped = linkedMapOf<String, Long>()
+    torrents.forEach { torrent ->
+        val tags = parseTags(torrent.tags)
+            .map { it.trim() }
+            .filter { it.isNotBlank() && it != "-" && !it.equals("null", ignoreCase = true) }
+            .distinctBy { it.lowercase() }
+
+        if (tags.isEmpty()) {
+            grouped[noTagLabel] = (grouped[noTagLabel] ?: 0L) + 1L
+        } else {
+            tags.forEach { tag ->
+                grouped[tag] = (grouped[tag] ?: 0L) + 1L
+            }
+        }
     }
     return grouped.entries
         .sortedByDescending { it.value }
